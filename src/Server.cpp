@@ -40,12 +40,12 @@ public:
     auto data_it = data_.find(key);
     return data_it != data_.end() ? data_it->second : "";
   }
-  std::size_t rpush(const std::string& key, const std::string& value) {
+  std::size_t rpush(const std::string& key, const std::vector<std::string>::const_iterator begin, const std::vector<std::string>::const_iterator end) {
     data_.erase(key);
     expi_.erase(key);
     auto& list = list_[key];
-    list_[key].push_back(value);
-    return list_[key].size();
+    list.insert(list.end(), begin, end);
+    return list.size();
   }
 };
 
@@ -245,7 +245,7 @@ private:
         response = RespParser::format_null_bulk_response();
       }
     } else if (cmd == "RPUSH" && command_parts.size() >= 3) {
-      std::size_t list_size = store_->rpush(command_parts[1], command_parts[2]);
+      std::size_t list_size = store_->rpush(command_parts[1], command_parts.begin()+2, command_parts.end());
       response = RespParser::format_integer_response(static_cast<int>(list_size));
     }
     do_write(response);
