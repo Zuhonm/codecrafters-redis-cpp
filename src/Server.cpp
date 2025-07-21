@@ -267,7 +267,7 @@ private:
       int start = std::stoi(command_parts[2]);
       int end = std::stoi(command_parts[3]);
       auto values = store_->lrange(command_parts[1], start, end);
-      
+      response = RespParser::format_multi_bulk_response(values);
     }
     do_write(response);
   }
