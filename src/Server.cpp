@@ -48,13 +48,24 @@ public:
     return list.size();
   }
   std::vector<std::string> lrange(const std::string& key, int start, int end) {
-    if (start > end || start > static_cast<int>(list_[key].size())) {
+    auto it = list_.find(key);
+    if (it == list_.end()) {
+      return {}; // Key doesn't exist
+    }
+    
+    const auto& list = it->second;
+    int size = static_cast<int>(list.size());
+    
+    if (start > end || start >= size) {
       return {}; // Invalid range
     }
-    if (end > static_cast<int>(list_[key].size())) {
-      end = list_[key].size();
+    
+    // Redis LRANGE end is inclusive, so we need to add 1 for the iterator range
+    if (end >= size) {
+      end = size - 1;
     }
-    return std::vector<std::string>(list_[key].begin() + start, list_[key].begin() + end);
+    
+    return std::vector<std::string>(list.begin() + start, list.begin() + end + 1);
   }
 };
 
