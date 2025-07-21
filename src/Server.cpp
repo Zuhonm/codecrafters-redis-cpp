@@ -17,10 +17,12 @@ class RedisStore {
 private:
   std::unordered_map<std::string, std::string> data_;
   std::unordered_map<std::string, std::chrono::steady_clock::time_point> expi_;
+  std::unordered_map<std::string, std::vector<std::string>> list_;
 public:
   void set(const std::string& key, const std::string& value) {
     data_[key] = value;
     expi_.erase(key); // Remove any existing expiration
+    list_.erase(key); // Remove any existing list
   }
   void set(const std::string& key, const std::string& value, int ttl) {
     data_[key] = value;
@@ -37,6 +39,13 @@ public:
     }
     auto data_it = data_.find(key);
     return data_it != data_.end() ? data_it->second : "";
+  }
+  std::size_t rpush(const std::string& key, const std::string& value) {
+    data_.erase(key);
+    expi_.erase(key);
+    auto& list = list_[key];
+    list_[key].push_back(value);
+    return list_[key].size();
   }
 };
 
@@ -96,6 +105,9 @@ public:
   }
   static std::string format_null_bulk_response() {
     return "$-1\r\n";
+  }
+  static std::string format_integer_response(const int value) {
+    return ":" + std::to_string(value) + "\r\n";
   }
 };
 
@@ -232,6 +244,9 @@ private:
       } else {
         response = RespParser::format_null_bulk_response();
       }
+    } else if (cmd == "RPUSH" && command_parts.size() >= 3) {
+      std::size_t list_size = store_->rpush(command_parts[1], command_parts[2]);
+      response = RespParser::format_integer_response(static_cast<int>(list_size));
     }
     do_write(response);
   }
