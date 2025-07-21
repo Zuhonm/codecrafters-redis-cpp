@@ -103,6 +103,24 @@ public:
     }
     return "";
   }
+  std::vector<std::string> lpop(const std::string& key, int count) {
+    if (count <= 0) {
+      return {}; // Invalid count
+    }
+    auto it = list_.find(key);
+    if (it == list_.end() || it->second.empty()) {
+      return {};
+    }
+    if ( count > static_cast<int>(it->second.size()) ) {
+      count = static_cast<int>(it->second.size()); // Adjust count if it exceeds list size
+    }
+    std::vector<std::string> values(it->second.begin(), it->second.begin() + count);
+    it->second.erase(it->second.begin(), it->second.begin() + count);
+    if (it->second.empty()) {
+      list_.erase(it); // Remove the key if the list is empty
+    }
+    return values;
+  }
 };
 
 class RespParser {
@@ -330,7 +348,12 @@ private:
           response = RespParser::format_null_bulk_response();
         }
       } else {
-
+        auto values = store_->lpop(command_parts[1], std::stoi(command_parts[2]));
+        if (!values.empty()) {
+          response = RespParser::format_multi_bulk_response(values);
+        } else {
+          response = RespParser::format_null_bulk_response();
+        }
       }
     }
     do_write(response);
