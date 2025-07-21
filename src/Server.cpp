@@ -181,6 +181,7 @@ private:
     } else if (cmd == "ECHO" && command_parts.size() >= 2) {
       response = RespParser::format_bulk_response(command_parts[1]);
     }
+    do_write(response);
   }
 };
 
