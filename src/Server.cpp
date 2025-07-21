@@ -215,6 +215,7 @@ private:
       response = RespParser::format_bulk_response(command_parts[1]);
     } else if (cmd == "SET" && command_parts.size() >= 3) {
       if (command_parts.size() >= 5) {
+        std::transform(command_parts[3].begin(), command_parts[3].end(), command_parts[3].begin(), ::toupper);
         if (command_parts[3] == "PX") {
           int ttl = std::stoi(command_parts[4]);
           store_->set(command_parts[1], command_parts[2], ttl);
