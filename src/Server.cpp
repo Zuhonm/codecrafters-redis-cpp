@@ -91,6 +91,18 @@ public:
     }
     return it->second.size();
   }
+  std::string lpop(const std::string& key) {
+    auto it = list_.find(key);
+    if( it != list_.end() && !it->second.empty()) {
+      std::string value = it->second.front();
+      it->second.erase(it->second.begin());
+      if (it->second.empty()) {
+        list_.erase(it); // Remove the key if the list is empty
+      }
+      return value;
+    }
+    return "";
+  }
 };
 
 class RespParser {
@@ -309,6 +321,17 @@ private:
     } else if (cmd == "LLEN" && command_parts.size() >= 2) {
       std::size_t list_size = store_->llen(command_parts[1]);
       response = RespParser::format_integer_response(static_cast<int>(list_size));
+    } else if (cmd == "LPOP" && command_parts.size() >= 2) {
+      if (command_parts.size() == 2) {
+        auto value = store_->lpop(command_parts[1]);
+        if (!value.empty()) {
+          response = RespParser::format_bulk_response(value);
+        } else {
+          response = RespParser::format_null_bulk_response();
+        }
+      } else {
+
+      }
     }
     do_write(response);
   }
