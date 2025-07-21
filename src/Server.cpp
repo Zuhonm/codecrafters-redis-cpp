@@ -84,6 +84,13 @@ public:
     list.insert(list.begin(), temp.begin(), temp.end());
     return list.size();
   }
+  std::size_t llen(const std::string& key) {
+    auto it = list_.find(key);
+    if (it == list_.end()) {
+      return 0; // Key doesn't exist
+    }
+    return it->second.size();
+  }
 };
 
 class RespParser {
@@ -298,6 +305,9 @@ private:
       response = RespParser::format_multi_bulk_response(values);
     } else if (cmd == "LPUSH" && command_parts.size() >= 3) {
       std::size_t list_size = store_->lpush(command_parts[1], command_parts.begin()+2, command_parts.end());
+      response = RespParser::format_integer_response(static_cast<int>(list_size));
+    } else if (cmd == "LLEN" && command_parts.size() >= 2) {
+      std::size_t list_size = store_->llen(command_parts[1]);
       response = RespParser::format_integer_response(static_cast<int>(list_size));
     }
     do_write(response);
