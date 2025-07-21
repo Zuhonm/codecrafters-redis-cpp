@@ -12,6 +12,62 @@
 
 using asio::ip::tcp;
 
+class RespParser {
+public:
+  RespParser() = default;
+  static std::vector<std::string> parse(const std::string& input) {
+    std::vector<std::string> result;
+    // *2\r\n$4\r\nECHO\r\n$3\r\nhey\r\n
+    if (message_buffer_.empty() || message_buffer_[0] != '*') {
+      return result; // Not a valid Redis message
+    }
+    // 2\r\n$4\r\nECHO\r\n$3\r\nhey\r\n
+    std::size_t pos = 1;
+    std::size_t end = message_buffer_.find("\r\n", pos);
+    if (end == std::string::npos) {
+      return result; // Incomplete message
+    }
+    std::size_t count = std::stoul(message_buffer_.substr(pos, end - pos));
+    pos = end + 2; // Move past "\r\n"
+    // $4\r\nECHO\r\n$3\r\nhey\r\n
+    for (std::size_t i = 0; i < count; i++) {
+      if(pos >= message_buffer_.size()) {
+        break;
+      }
+      if (message_buffer_[pos] != '$') {
+        break; // Not a valid Redis message
+      }
+      pos++;
+      // 4\r\nECHO\r\n$3\r\nhey\r\n
+      end = message_buffer_.find("\r\n", pos);
+      if (end == std::string::npos) {
+        break; // Incomplete message
+      }
+      std::size_t length = std::stoul(message_buffer_.substr(pos, end - pos));
+      pos = end + 2; // Move past "\r\n"
+      // ECHO\r\n$3\r\nhey\r\n
+      if (pos + length > message_buffer_.size()) {
+        break; // Incomplete message
+      }
+      result.push_back(input.substr(pos, length));
+      pos += length; // Move past the actual message
+      // \r\n$3\r\nhey\r\n
+      if (pos + 2 > message_buffer_.size() || message_buffer_[pos] != '\r' || message_buffer_[pos + 1] != '\n') {
+        break; // Incomplete message
+      }
+      pos += 2; // Move past "\r\n"
+      // $3\r\nhey\r\n
+    }
+    return result;
+  }
+  static std::string format_simple_response(const std::string& input) {
+    return "+" + input + "\r\n";
+  }
+  static std::string format_bulk_response(const std::string& input) {
+    return "$" + std::to_string(input.length()) + "\r\n" + input + "\r\n";
+  }
+};
+
 class RedisClient : public std::enable_shared_from_this<RedisClient> {
 private:
   tcp::socket socket_;
@@ -45,11 +101,6 @@ private:
       }
     );
   }
-  void do_process_messages() {
-    std::string response = "+PONG\r\n";
-    do_write(response);
-  }
-
   void do_write(const std::string& response) {
     auto self = shared_from_this();
     asio::async_write(
@@ -61,6 +112,75 @@ private:
         }
       }
     );
+  }
+  void do_process_messages() {
+    std::string response;
+    while (true) {
+      std::size_t complete_message_pos = do_find_complete_message();
+      if (complete_message_pos == std::string::npos) {
+        break; // No complete message found
+      }
+      std::string complete_message = message_buffer_.substr(0, complete_message_pos);
+      message_buffer_.erase(0, complete_message_pos);
+      do_process_command(complete_message);
+    }
+  }
+  std::size_t do_find_complete_message() {
+    // *2\r\n$4\r\nECHO\r\n$3\r\nhey\r\n
+    if (message_buffer_.empty() || message_buffer_[0] != '*') {
+      return std::string::npos; // Not a valid Redis message
+    }
+    // 2\r\n$4\r\nECHO\r\n$3\r\nhey\r\n
+    std::size_t pos = 1;
+    std::size_t end = message_buffer_.find("\r\n", pos);
+    if (end == std::string::npos) {
+      return std::string::npos; // Incomplete message
+    }
+    std::size_t count = std::stoul(message_buffer_.substr(pos, end - pos));
+    pos = end + 2; // Move past "\r\n"
+    // $4\r\nECHO\r\n$3\r\nhey\r\n
+    for (std::size_t i = 0; i < count; i++) {
+      if(pos >= message_buffer_.size()) {
+        return std::string::npos;
+      }
+      if (message_buffer_[pos] != '$') {
+        return std::string::npos; // Not a valid Redis message
+      }
+      pos++;
+      // 4\r\nECHO\r\n$3\r\nhey\r\n
+      end = message_buffer_.find("\r\n", pos);
+      if (end == std::string::npos) {
+        return std::string::npos; // Incomplete message
+      }
+      std::size_t length = std::stoul(message_buffer_.substr(pos, end - pos));
+      pos = end + 2; // Move past "\r\n"
+      // ECHO\r\n$3\r\nhey\r\n
+      if (pos + length > message_buffer_.size()) {
+        return std::string::npos; // Incomplete message
+      }
+      pos += length; // Move past the actual message
+      // \r\n$3\r\nhey\r\n
+      if (pos + 2 > message_buffer_.size() || message_buffer_[pos] != '\r' || message_buffer_[pos + 1] != '\n') {
+        return std::string::npos; // Incomplete message
+      }
+      pos += 2; // Move past "\r\n"
+      // $3\r\nhey\r\n
+    }
+    return pos;
+  }
+  void do_process_command(const std::string& command) {
+    auto command_parts = RespParser::parse(command);
+    if (command_parts.empty())  {
+      return;
+    }
+    std::string cmd = command_parts[0];
+    std::transform(cmd.begin(), cmd.end(), cmd.begin(), ::toupper);
+    std::string response;
+    if (cmd == "PING") {
+      response = RespParser::format_simple_response("PONG");
+    } else if (cmd == "ECHO" && command_parts.size() >= 2) {
+      response = RespParser::format_bulk_response(command_parts[1]);
+    }
   }
 };
 
@@ -96,63 +216,6 @@ int main(int argc, char **argv) {
   // Flush after every std::cout / std::cerr
   std::cout << std::unitbuf;
   std::cerr << std::unitbuf;
-  
-  // int server_fd = socket(AF_INET, SOCK_STREAM, 0);
-  // if (server_fd < 0) {
-  //  std::cerr << "Failed to create server socket\n";
-  //  return 1;
-  // }
-  
-  // // Since the tester restarts your program quite often, setting SO_REUSEADDR
-  // // ensures that we don't run into 'Address already in use' errors
-  // int reuse = 1;
-  // if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
-  //   std::cerr << "setsockopt failed\n";
-  //   return 1;
-  // }
-  
-  // struct sockaddr_in server_addr;
-  // server_addr.sin_family = AF_INET;
-  // server_addr.sin_addr.s_addr = INADDR_ANY;
-  // server_addr.sin_port = htons(6379);
-  
-  // if (bind(server_fd, (struct sockaddr *) &server_addr, sizeof(server_addr)) != 0) {
-  //   std::cerr << "Failed to bind to port 6379\n";
-  //   return 1;
-  // }
-  
-  // int connection_backlog = 5;
-  // if (listen(server_fd, connection_backlog) != 0) {
-  //   std::cerr << "listen failed\n";
-  //   return 1;
-  // }
-  
-  // struct sockaddr_in client_addr;
-  // int client_addr_len = sizeof(client_addr);
-  // std::cout << "Waiting for a client to connect...\n";
-
-  // // You can use print statements as follows for debugging, they'll be visible when running tests.
-  // std::cout << "Logs from your program will appear here!\n";
-
-  // // Uncomment this block to pass the first stage
-  // // 
-  // int client_fd = accept(server_fd, (struct sockaddr *) &client_addr, (socklen_t *) &client_addr_len);
-  // while (true) {
-  //   std::vector<char> readbuffer(1024);
-  //   int byte_read = recv(client_fd, readbuffer.data(), readbuffer.size(), 0);
-  //   if (byte_read <= 0) {
-  //     break;
-  //   }
-  //   std::string request(readbuffer.data());
-  //   if (request.find("PING") != std::string::npos) {
-  //     std::string resPong = "+PONG\r\n";
-  //     send(client_fd, resPong.c_str(), resPong.length(), 0);
-  //   }
-  // }
-  // close(client_fd);
-  // std::cout << "Client connected\n";
-  
-  // close(server_fd);
 
   try {
     asio::io_context io_context;
