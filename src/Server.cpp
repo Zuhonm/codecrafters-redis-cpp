@@ -11,15 +11,30 @@
 #include <asio.hpp>
 
 using asio::ip::tcp;
+using namespace std::chrono;
 
 class RedisStore {
 private:
   std::unordered_map<std::string, std::string> data_;
+  std::unordered_map<std::string, std::chrono::steady_clock::time_point> expi_;
 public:
   void set(const std::string& key, const std::string& value) {
     data_[key] = value;
+    expi_.erase(key); // Remove any existing expiration
+  }
+  void set(const std::string& key, const std::string& value, int ttl) {
+    data_[key] = value;
+    expi_[key] = steady_clock::now() + milliseconds(ttl);
   }
   std::string get(const std::string& key) {
+    auto exp_it = expi_.find(key);
+    if (exp_it != expi_.end()) {
+      if (steady_clock::now() > exp_it->second) {
+        data_.erase(key); // Remove expired key
+        expi_.erase(exp_it); // Remove expiration entry
+        return ""; // Key has expired
+      }
+    }
     auto data_it = data_.find(key);
     return data_it != data_.end() ? data_it->second : "";
   }
@@ -199,8 +214,16 @@ private:
     } else if (cmd == "ECHO" && command_parts.size() >= 2) {
       response = RespParser::format_bulk_response(command_parts[1]);
     } else if (cmd == "SET" && command_parts.size() >= 3) {
-      store_->set(command_parts[1], command_parts[2]);
-      response = RespParser::format_simple_response("OK");
+      if (command_parts.size() >= 5) {
+        if (command_parts[3] == "PX") {
+          int ttl = std::stoi(command_parts[4]);
+          store_->set(command_parts[1], command_parts[2], ttl);
+          response = RespParser::format_simple_response("OK");
+        }
+      } else {
+        store_->set(command_parts[1], command_parts[2]);
+        response = RespParser::format_simple_response("OK");
+      }
     } else if (cmd == "GET" && command_parts.size() >= 2) {
       std::string value = store_->get(command_parts[1]);
       if (!value.empty()) {
