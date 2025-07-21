@@ -52,19 +52,27 @@ public:
     if (it == list_.end()) {
       return {}; // Key doesn't exist
     }
-    
     const auto& list = it->second;
     int size = static_cast<int>(list.size());
-    
+    if (start < 0) {
+      start += size; // Convert negative index to positive
+      if (start < 0) {
+        start = 0; // Ensure start is not negative
+      }
+    }
+    if (end < 0) {
+      end += size; // Convert negative index to positive
+      if (end < 0) {
+        end = 0; // Ensure end is not negative
+      }
+    }
     if (start > end || start >= size) {
       return {}; // Invalid range
     }
-    
     // Redis LRANGE end is inclusive, so we need to add 1 for the iterator range
     if (end >= size) {
       end = size - 1;
     }
-    
     return std::vector<std::string>(list.begin() + start, list.begin() + end + 1);
   }
 };
