@@ -18,41 +18,41 @@ public:
   static std::vector<std::string> parse(const std::string& input) {
     std::vector<std::string> result;
     // *2\r\n$4\r\nECHO\r\n$3\r\nhey\r\n
-    if (message_buffer_.empty() || message_buffer_[0] != '*') {
+    if (input.empty() || input[0] != '*') {
       return result; // Not a valid Redis message
     }
     // 2\r\n$4\r\nECHO\r\n$3\r\nhey\r\n
     std::size_t pos = 1;
-    std::size_t end = message_buffer_.find("\r\n", pos);
+    std::size_t end = input.find("\r\n", pos);
     if (end == std::string::npos) {
       return result; // Incomplete message
     }
-    std::size_t count = std::stoul(message_buffer_.substr(pos, end - pos));
+    std::size_t count = std::stoul(input.substr(pos, end - pos));
     pos = end + 2; // Move past "\r\n"
     // $4\r\nECHO\r\n$3\r\nhey\r\n
     for (std::size_t i = 0; i < count; i++) {
-      if(pos >= message_buffer_.size()) {
+      if(pos >= input.size()) {
         break;
       }
-      if (message_buffer_[pos] != '$') {
+      if (input[pos] != '$') {
         break; // Not a valid Redis message
       }
       pos++;
       // 4\r\nECHO\r\n$3\r\nhey\r\n
-      end = message_buffer_.find("\r\n", pos);
+      end = input.find("\r\n", pos);
       if (end == std::string::npos) {
         break; // Incomplete message
       }
-      std::size_t length = std::stoul(message_buffer_.substr(pos, end - pos));
+      std::size_t length = std::stoul(input.substr(pos, end - pos));
       pos = end + 2; // Move past "\r\n"
       // ECHO\r\n$3\r\nhey\r\n
-      if (pos + length > message_buffer_.size()) {
+      if (pos + length > input.size()) {
         break; // Incomplete message
       }
       result.push_back(input.substr(pos, length));
       pos += length; // Move past the actual message
       // \r\n$3\r\nhey\r\n
-      if (pos + 2 > message_buffer_.size() || message_buffer_[pos] != '\r' || message_buffer_[pos + 1] != '\n') {
+      if (pos + 2 > input.size() || input[pos] != '\r' || input[pos + 1] != '\n') {
         break; // Incomplete message
       }
       pos += 2; // Move past "\r\n"
