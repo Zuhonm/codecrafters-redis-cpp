@@ -47,6 +47,15 @@ public:
     list.insert(list.end(), begin, end);
     return list.size();
   }
+  std::vector<std::string> lrange(const std::string& key, int start, int end) {
+    if (start > end || start > static_cast<int>(list_[key].size())) {
+      return {}; // Invalid range
+    }
+    if (end > static_cast<int>(list_[key].size())) {
+      end = list_[key].size();
+    }
+    return std::vector<std::string>(list_[key].begin() + start, list_[key].begin() + end);
+  }
 };
 
 class RespParser {
@@ -108,6 +117,13 @@ public:
   }
   static std::string format_integer_response(const int value) {
     return ":" + std::to_string(value) + "\r\n";
+  }
+  static std::string format_multi_bulk_response(const std::vector<std::string>& values) {
+    std::string response = "*" + std::to_string(values.size()) + "\r\n";
+    for (const auto& value: values) {
+      response += "$" + std::to_string(value.length()) + "\r\n" + value + "\r\n";
+    }
+    return response;
   }
 };
 
@@ -247,6 +263,11 @@ private:
     } else if (cmd == "RPUSH" && command_parts.size() >= 3) {
       std::size_t list_size = store_->rpush(command_parts[1], command_parts.begin()+2, command_parts.end());
       response = RespParser::format_integer_response(static_cast<int>(list_size));
+    } else if (cmd == "LRANGE" && command_parts.size() >= 4) {
+      int start = std::stoi(command_parts[2]);
+      int end = std::stoi(command_parts[3]);
+      auto values = store_->lrange(command_parts[1], start, end);
+      
     }
     do_write(response);
   }
