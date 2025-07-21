@@ -75,6 +75,15 @@ public:
     }
     return std::vector<std::string>(list.begin() + start, list.begin() + end + 1);
   }
+  std::size_t lpush(const std::string& key, const std::vector<std::string>::const_iterator begin, const std::vector<std::string>::const_iterator end) {
+    data_.erase(key);
+    expi_.erase(key);
+    auto& list = list_[key];
+    std::vector<std::string> temp(begin, end);
+    std::reverse(temp.begin(), temp.end());
+    list.insert(list.begin(), temp.begin(), temp.end());
+    return list.size();
+  }
 };
 
 class RespParser {
@@ -287,6 +296,9 @@ private:
       int end = std::stoi(command_parts[3]);
       auto values = store_->lrange(command_parts[1], start, end);
       response = RespParser::format_multi_bulk_response(values);
+    } else if (cmd == "LPUSH" && command_parts.size() >= 3) {
+      std::size_t list_size = store_->lpush(command_parts[1], command_parts.begin()+2, command_parts.end());
+      response = RespParser::format_integer_response(static_cast<int>(list_size));
     }
     do_write(response);
   }
