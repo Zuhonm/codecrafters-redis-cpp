@@ -12,6 +12,19 @@
 
 using asio::ip::tcp;
 
+class RedisStore {
+private:
+  std::unordered_map<std::string, std::string> data_;
+public:
+  void set(const std::string& key, const std::string& value) {
+    data_[key] = value;
+  }
+  std::string get(const std::string& key) {
+    auto data_it = data_.find(key);
+    return data_it != data_.end() ? data_it->second : "";
+  }
+};
+
 class RespParser {
 public:
   RespParser() = default;
@@ -66,16 +79,21 @@ public:
   static std::string format_bulk_response(const std::string& input) {
     return "$" + std::to_string(input.length()) + "\r\n" + input + "\r\n";
   }
+  static std::string format_null_bulk_response() {
+    return "$-1\r\n";
+  }
 };
 
-class RedisClient : public std::enable_shared_from_this<RedisClient> {
+class RedisConnection : public std::enable_shared_from_this<RedisConnection> {
 private:
   tcp::socket socket_;
   std::vector<char> read_buffer_;
   std::string message_buffer_;
+  std::shared_ptr<RedisStore> store_;
 public:
-  RedisClient(tcp::socket socket)
-    :socket_(std::move(socket)), read_buffer_(1024) {
+  RedisConnection(tcp::socket socket, std::shared_ptr<RedisStore> store)
+    :socket_(std::move(socket)), read_buffer_(1024),
+    store_(store) {
       std::cout << "Client connected\n";
     }
   void start() {
@@ -180,6 +198,16 @@ private:
       response = RespParser::format_simple_response("PONG");
     } else if (cmd == "ECHO" && command_parts.size() >= 2) {
       response = RespParser::format_bulk_response(command_parts[1]);
+    } else if (cmd == "SET" && command_parts.size() >= 3) {
+      store_->set(command_parts[1], command_parts[2]);
+      response = RespParser::format_simple_response("OK");
+    } else if (cmd == "GET" && command_parts.size() >= 2) {
+      std::string value = store_->get(command_parts[1]);
+      if (!value.empty()) {
+        response = RespParser::format_bulk_response(value);
+      } else {
+        response = RespParser::format_null_bulk_response();
+      }
     }
     do_write(response);
   }
@@ -188,9 +216,11 @@ private:
 class RedisServer {
 private:
   tcp::acceptor acceptor_;
+  std::shared_ptr<RedisStore> store_;
 public:
   RedisServer(asio::io_context& io_context, int port)
-    :acceptor_(io_context, tcp::endpoint(tcp::v4(), port)) {
+    :acceptor_(io_context, tcp::endpoint(tcp::v4(), port)),
+     store_(std::make_shared<RedisStore>()) {
       acceptor_.set_option(tcp::acceptor::reuse_address(true));
 
       std::cout << "Waiting for a client to connect...\n";
@@ -203,7 +233,7 @@ private:
       acceptor_.async_accept(
         [this](asio::error_code ec, tcp::socket socket) {
           if ( !ec ) {
-            std::make_shared<RedisClient>(std::move(socket))->start();
+            std::make_shared<RedisConnection>(std::move(socket), store_)->start();
           } else {
             std::cerr << "Accept error: " << ec.message() << std::endl;
           }
