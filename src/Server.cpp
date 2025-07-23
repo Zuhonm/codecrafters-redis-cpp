@@ -8,17 +8,233 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <vector>
+#include <unordered_set>
+#include <optional>
 #include <asio.hpp>
 
 using asio::ip::tcp;
 using namespace std::chrono;
+
+// Forward declarations
+class RedisConnection;
+class BlockingOperationManager;
+class EventNotificationSystem;
+
+// basic interface for blocking operations
+class BlockingOperation {
+public:
+  enum class Type { BLPOP };
+  virtual ~BlockingOperation() = default;
+  virtual Type get_type() const = 0;
+  virtual bool is_expired() const = 0;
+  virtual std::vector<std::string> get_watched_keys() const = 0;
+  virtual void handle_timeout() = 0;
+  virtual bool try_execute() = 0;
+protected:
+  std::shared_ptr<RedisConnection> connection_;
+  steady_clock::time_point start_time_;
+  int timeout_seconds_;
+public:
+  BlockingOperation(std::shared_ptr<RedisConnection> conn, int timeout)
+    :connection_(conn), start_time_(steady_clock::now()), timeout_seconds_(timeout) {}
+  std::shared_ptr<RedisConnection> get_connection() const { return connection_; }
+  bool is_timeout_enabled() const { return timeout_seconds_ > 0; }
+  std::chrono::seconds get_remaining_time() const {
+    if (!is_timeout_enabled()) {
+      return seconds::max(); // No timeout
+    }
+    auto elapsed = duration_cast<seconds>(steady_clock::now() - start_time_);
+    return seconds(timeout_seconds_) - elapsed;
+  }
+};
+
+class BlpopOperation : public BlockingOperation,
+                       public std::enable_shared_from_this<BlpopOperation> {
+private:
+  std::vector<std::string> keys_;
+public:
+  BlpopOperation(std::shared_ptr<RedisConnection> conn, const std::vector<std::string>& keys, int timeont)
+    :BlockingOperation(conn, timeont), keys_(keys) {}
+  Type get_type() const override { return Type::BLPOP; }
+  bool is_expired() const override {
+    if (!is_timeout_enabled()) {
+      return false; // No timeout
+    }
+    return get_remaining_time() <= seconds(0);
+  }
+  std::vector<std::string> get_watched_keys() const override { return keys_; }
+  void handle_timeout() override {
+    connection_->remove_blocking_operation(shared_from_this());
+  }
+  bool try_execute() override {
+    auto result = connection_->try_blpop(keys_);
+    if (result.has_value()) {
+      std::string response = RespParser::format_blpop_response(result.value());
+      connection_->send_response(response);
+      connection_->remove_blocking_operation(shared_from_this());
+      return true;
+    }
+    return false;
+  }
+};
+
+class EventNotificationSystem {
+public:
+  enum class EventType { LIST_PUSH, LIST_POP };
+  struct Event{
+    EventType type;
+    std::string key;
+    std::vector<std::string> values;
+    Event(EventType type, const std::string& key, const std::vector<std::string>& values = {})
+      :type(type), key(key), values(values) {}
+  };
+private:
+  std::unordered_map<std::string, std::vector<std::weak_ptr<BlockingOperation>>> key_watchers_;
+  std::unordered_map<EventType, std::vector<std::function<void(const Event&)>>> event_handlers_;
+public:
+  void register_blocking_operation(const std::shared_ptr<BlockingOperation>& op) {
+    auto weak_op = std::weak_ptr<BlockingOperation>(op);
+    for (const auto& key : op->get_watched_keys()) {
+      key_watchers_[key].push_back(weak_op);
+    }
+  }
+  void unregister_blocking_operation(const std::shared_ptr<BlockingOperation>& op) {
+    for (const auto& key : op->get_watched_keys()) {
+      auto& watchers = key_watchers_[key];
+      watchers.erase(std::remove_if(watchers.begin(), watchers.end(),
+        [&op](const std::weak_ptr<BlockingOperation>& weak_op) {
+         return weak_op.lock() == op || weak_op.expired();
+        }), watchers.end());
+      if (watchers.empty()) {
+        key_watchers_.erase(key); // Remove key if no watchers left
+      }
+    }
+  }
+  void emit_event(const Event& event) {
+    auto it = key_watchers_.find(event.key);
+    if (it != key_watchers_.end()) {
+      auto& watchers = it->second;
+      std::vector<std::shared_ptr<BlockingOperation>> relevant_ops;
+      for (auto& weak_op : watchers) {
+        if (auto op = weak_op.lock()) {
+          if (is_event_relevant_operation(event, op)) {
+            relevant_ops.push_back(op);
+          }
+        }
+      }
+      if (!relevant_ops.empty()) {
+        auto op = relevant_ops.front();
+        if (op->try_execute()) {
+          unregister_blocking_operation(op);
+        }
+      }
+    }
+    cleanup_expired_watchers(event.key);
+    auto handler_it = event_handlers_.find(event.type);
+    if (handler_it != event_handlers_.end()) {
+      for (auto& handler : handler_it->second) {
+        handler(event);
+      }
+    }
+  }
+  void register_event_handler(EventType type, std::function<void(const Event&)> handler) {
+    event_handlers_[type].push_back(handler);
+  }
+private:
+  bool is_event_relevant_operation(const Event& event, const std::shared_ptr<BlockingOperation>& op) {
+    switch (event.type) {
+      case EventType::LIST_PUSH:
+        return op->get_type() == BlockingOperation::Type::BLPOP;
+      default:
+        return false; // Unsupported event type
+    }
+  }
+  void cleanup_expired_watchers(const std::string key) {
+    auto it = key_watchers_.find(key);
+    if ( it == key_watchers_.end() ) {
+      return;
+    }
+    auto watchers = it->second;
+    watchers.erase(std::remove_if(watchers.begin(), watchers.end(),
+      [](const std::weak_ptr<BlockingOperation> weak_op) {
+        return weak_op.expired();
+      }), watchers.end());
+    if (watchers.empty()) {
+      key_watchers_.erase(key);
+    }
+  }
+};
+
+class BlockingOperationManager {
+private:
+  std::vector<std::shared_ptr<BlockingOperation>> active_operations_;
+  std::shared_ptr<EventNotificationSystem> event_systems_;
+  asio::steady_timer cleanup_timer_;
+public:
+  BlockingOperationManager(asio::io_context& io_context, std::shared_ptr<EventNotificationSystem> event_system)
+    :event_systems_(event_system), cleanup_timer_(io_context) {
+      schedule_cleanup();
+  };
+  void add_blocking_operation(std::shared_ptr<BlockingOperation> op) {
+    active_operations_.push_back(op);
+    event_systems_->register_blocking_operation(op);
+    if (op->is_timeout_enabled()) {
+      auto timer = std::make_shared<asio::steady_timer>(cleanup_timer_.get_executor(), op->get_remaining_time());
+      timer->async_wait([this, op, timer](asio::error_code ec){
+        if (!ec && !op->is_expired()) {
+          op->handle_timeout();
+          // remove_blocking logic
+          remove_blocking_operation(op);
+        }
+      });
+    }
+  }
+  void remove_blocking_operation(std::shared_ptr<BlockingOperation> op) {
+    event_systems_->unregister_blocking_operation(op);
+    active_operations_.erase(
+      std::remove(active_operations_.begin(), active_operations_.end(), op),
+      active_operations_.end()
+    );
+  }
+  void emit_event(const EventNotificationSystem::Event& event) {
+    event_systems_->emit_event(event);
+  }
+private:
+  // I think it is useless TODO: remove it
+  void schedule_cleanup() {
+      cleanup_timer_.expires_after(seconds(1));
+      cleanup_timer_.async_wait([this](asio::error_code ec){
+        if (!ec) {
+          // cleanup_logic
+          cleanup_expired_operations();
+          schedule_cleanup();
+        }
+      });
+  }
+  void cleanup_expired_operations() {
+    auto it = std::remove_if(active_operations_.begin(), active_operations_.end(), 
+      [this](std::shared_ptr<BlockingOperation> op) {
+        if (op->is_expired()) {
+          op->handle_timeout();
+          event_systems_->unregister_blocking_operation(op);
+          return true;
+        }
+        return false;
+      });
+    active_operations_.erase(it, active_operations_.end());
+  }
+};
 
 class RedisStore {
 private:
   std::unordered_map<std::string, std::string> data_;
   std::unordered_map<std::string, std::chrono::steady_clock::time_point> expi_;
   std::unordered_map<std::string, std::vector<std::string>> list_;
+  std::shared_ptr<BlockingOperationManager> blocking_manager_;
 public:
+  void set_blocking_manager(std::shared_ptr<BlockingOperationManager> blocking_manager) {
+    blocking_manager_ = blocking_manager;
+  }
   void set(const std::string& key, const std::string& value) {
     data_[key] = value;
     expi_.erase(key); // Remove any existing expiration
@@ -121,6 +337,20 @@ public:
     }
     return values;
   }
+  std::optional<std::pair<std::string, std::string>> try_blpop(const std::vector<std::string>& keys) {
+    for (auto key: keys) {
+      auto it = list_.find(key);
+      if (it != list_.end() && !it->second.empty()) {
+        std::string value = it->second.front();
+        it->second.erase(it->second.begin());
+        if (it->second.empty()) {
+          list_.erase(it);
+        }
+        return std::make_optional(std::make_pair(key, value));
+      }
+    }
+    return std::nullopt;
+  }
 };
 
 class RespParser {
@@ -190,6 +420,11 @@ public:
     }
     return response;
   }
+  static std::string format_blpop_response(const std::pair<std::string, std::string>& pair) {
+    std::string response = "*2\r\n" + std::to_string(pair.first.length()) + "\r\n" + pair.first + "\r\n"
+                          + std::to_string(pair.second.length()) + "\r\n" + pair.second + "\r\n";
+    return response;
+  }
 };
 
 class RedisConnection : public std::enable_shared_from_this<RedisConnection> {
@@ -198,14 +433,38 @@ private:
   std::vector<char> read_buffer_;
   std::string message_buffer_;
   std::shared_ptr<RedisStore> store_;
+  std::shared_ptr<BlockingOperationManager> blocking_manager_;
+  std::unordered_set<std::shared_ptr<BlockingOperation>> my_blocking_ops_;
 public:
-  RedisConnection(tcp::socket socket, std::shared_ptr<RedisStore> store)
-    :socket_(std::move(socket)), read_buffer_(1024),
-    store_(store) {
+  RedisConnection(tcp::socket socket, 
+                  std::shared_ptr<RedisStore> store,
+                  std::shared_ptr<BlockingOperationManager> blocking_manager)
+    :socket_(std::move(socket)),
+    read_buffer_(1024),
+    store_(store),
+    blocking_manager_(blocking_manager) {
       std::cout << "Client connected\n";
+  }
+  ~RedisConnection() {
+    for (auto op: my_blocking_ops_) {
+      blocking_manager_->remove_blocking_operation(op);
     }
+    std::cout << "Client disconnected\n";
+  }
   void start() {
     do_read();
+  }
+  void send_response(const std::string& response) {
+    do_write(response);
+  }
+  void add_blocking_operation(std::shared_ptr<BlockingOperation> op) {
+    my_blocking_ops_.insert(op);
+  }
+  void remove_blocking_operation(std::shared_ptr<BlockingOperation> op) {
+    my_blocking_ops_.erase(op);
+  }
+  std::optional<std::pair<std::string, std::string>> try_blpop(const std::vector<std::string>& keys) {
+    return store_->try_blpop(keys);
   }
 private:
   void do_read() {
@@ -355,6 +614,15 @@ private:
           response = RespParser::format_null_bulk_response();
         }
       }
+    } else if (cmd == "BLPOP" && command_parts.size() >= 3) {
+      int timeout = std::stoi(command_parts.back());
+      std::vector<std::string> keys(command_parts.begin()+1, command_parts.end()-1);
+      auto blpop_op = std::make_shared<BlockingOperation>(shared_from_this(), timeout);
+      if (!blpop_op->try_execute()) {
+        add_blocking_operation(blpop_op);
+        blocking_manager_->add_blocking_operation(blpop_op);
+      }
+      return;
     }
     do_write(response);
   }
@@ -364,10 +632,16 @@ class RedisServer {
 private:
   tcp::acceptor acceptor_;
   std::shared_ptr<RedisStore> store_;
+  std::shared_ptr<EventNotificationSystem> event_system_;
+  std::shared_ptr<BlockingOperationManager> blocking_manager_;
+  asio::io_context& io_context_;
 public:
   RedisServer(asio::io_context& io_context, int port)
     :acceptor_(io_context, tcp::endpoint(tcp::v4(), port)),
-     store_(std::make_shared<RedisStore>()) {
+     store_(std::make_shared<RedisStore>()),
+     event_system_(std::make_shared<EventNotificationSystem>()),
+     blocking_manager_(std::make_shared<BlockingOperationManager>(io_context, event_system_)),
+     io_context_(io_context) {
       acceptor_.set_option(tcp::acceptor::reuse_address(true));
 
       std::cout << "Waiting for a client to connect...\n";
