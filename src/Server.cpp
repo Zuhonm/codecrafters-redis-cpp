@@ -250,14 +250,14 @@ public:
     expi_.erase(key);
     auto& list = list_[key];
     list.insert(list.end(), begin, end);
-
+    std::size_t result = list.size();
     if (blocking_manager_) {
       blocking_manager_->emit_event(
         EventNotificationSystem::Event(EventNotificationSystem::EventType::LIST_PUSH, key, std::vector<std::string>(begin, end))
       );
     }
     
-    return list.size();
+    return result;
   }
   std::vector<std::string> lrange(const std::string& key, int start, int end) {
     auto it = list_.find(key);
@@ -294,14 +294,14 @@ public:
     std::vector<std::string> temp(begin, end);
     std::reverse(temp.begin(), temp.end());
     list.insert(list.begin(), temp.begin(), temp.end());
-
+    std::size_t result = list.size(); // if blpop performs, list will be poped, and size then changes
     if (blocking_manager_) {
       blocking_manager_->emit_event(
         EventNotificationSystem::Event(EventNotificationSystem::EventType::LIST_PUSH, key, temp)
       );
     }
     
-    return list.size();
+    return result;
   }
   std::size_t llen(const std::string& key) {
     auto it = list_.find(key);
