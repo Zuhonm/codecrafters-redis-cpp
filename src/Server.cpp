@@ -241,6 +241,7 @@ public:
     if (list_.find(key) != list_.end()) {
       return DataType::LIST;
     }
+    return DataType::NONE;
   }
   void set(const std::string& key, const std::string& value) {
     data_[key] = value;
