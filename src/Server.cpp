@@ -624,7 +624,9 @@ void BlpopOperation::handle_timeout() {
 bool BlpopOperation::try_execute() {
   auto result = connection_->try_blpop(keys_);
   if (result.has_value()) {
+    std::cerr << "[DEBUG] BLPOP returned key: " << result->first << std::endl;
     std::string response = RespParser::format_blpop_response(result.value());
+    std::cerr << "[DEBUG] Sending response: " << response << std::endl;
     connection_->send_response(response);
     connection_->remove_blocking_operation(shared_from_this());
     return true;
