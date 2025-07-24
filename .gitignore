@@ -49,3 +49,5 @@ build/
 vcpkg_installed
 include/
 .gitignore
+redis-cli.py
+.vscode/launch.json

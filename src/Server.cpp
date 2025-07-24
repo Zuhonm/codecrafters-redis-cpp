@@ -250,6 +250,13 @@ public:
     expi_.erase(key);
     auto& list = list_[key];
     list.insert(list.end(), begin, end);
+
+    if (blocking_manager_) {
+      blocking_manager_->emit_event(
+        EventNotificationSystem::Event(EventNotificationSystem::EventType::LIST_PUSH, key, std::vector<std::string>(begin, end))
+      );
+    }
+    
     return list.size();
   }
   std::vector<std::string> lrange(const std::string& key, int start, int end) {
@@ -287,6 +294,13 @@ public:
     std::vector<std::string> temp(begin, end);
     std::reverse(temp.begin(), temp.end());
     list.insert(list.begin(), temp.begin(), temp.end());
+
+    if (blocking_manager_) {
+      blocking_manager_->emit_event(
+        EventNotificationSystem::Event(EventNotificationSystem::EventType::LIST_PUSH, key, temp)
+      );
+    }
+    
     return list.size();
   }
   std::size_t llen(const std::string& key) {
@@ -624,9 +638,7 @@ void BlpopOperation::handle_timeout() {
 bool BlpopOperation::try_execute() {
   auto result = connection_->try_blpop(keys_);
   if (result.has_value()) {
-    std::cerr << "[DEBUG] BLPOP returned key: " << result->first << std::endl;
     std::string response = RespParser::format_blpop_response(result.value());
-    std::cerr << "[DEBUG] Sending response: " << response << std::endl;
     connection_->send_response(response);
     connection_->remove_blocking_operation(shared_from_this());
     return true;
@@ -649,7 +661,7 @@ public:
      blocking_manager_(std::make_shared<BlockingOperationManager>(io_context, event_system_)),
      io_context_(io_context) {
       acceptor_.set_option(tcp::acceptor::reuse_address(true));
-
+      store_->set_blocking_manager(blocking_manager_);
       std::cout << "Waiting for a client to connect...\n";
       std::cout << "Logs from your program will appear here!\n";
       do_accept();
