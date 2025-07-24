@@ -653,6 +653,7 @@ private:
         case RedisStore::DataType::LIST : type_str = "list"; break;
         case RedisStore::DataType::STRING : type_str = "string"; break;
         case RedisStore::DataType::NONE:  type_str = "none"; break;
+        default: type_str = "none"; break;
       }
       response = RespParser::format_simple_response(type_str);
     }
