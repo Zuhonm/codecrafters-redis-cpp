@@ -63,19 +63,8 @@ public:
     return get_remaining_time() <= seconds(0);
   }
   std::vector<std::string> get_watched_keys() const override { return keys_; }
-  void handle_timeout() override {
-    connection_->remove_blocking_operation(shared_from_this());
-  }
-  bool try_execute() override {
-    auto result = connection_->try_blpop(keys_);
-    if (result.has_value()) {
-      std::string response = RespParser::format_blpop_response(result.value());
-      connection_->send_response(response);
-      connection_->remove_blocking_operation(shared_from_this());
-      return true;
-    }
-    return false;
-  }
+  void handle_timeout() override;
+  bool try_execute() override;
 };
 
 class EventNotificationSystem {
@@ -617,7 +606,7 @@ private:
     } else if (cmd == "BLPOP" && command_parts.size() >= 3) {
       int timeout = std::stoi(command_parts.back());
       std::vector<std::string> keys(command_parts.begin()+1, command_parts.end()-1);
-      auto blpop_op = std::make_shared<BlockingOperation>(shared_from_this(), timeout);
+      auto blpop_op = std::make_shared<BlpopOperation>(shared_from_this(), keys, timeout);
       if (!blpop_op->try_execute()) {
         add_blocking_operation(blpop_op);
         blocking_manager_->add_blocking_operation(blpop_op);
@@ -627,6 +616,21 @@ private:
     do_write(response);
   }
 };
+
+void BlpopOperation::handle_timeout() {
+  connection_->remove_blocking_operation(shared_from_this());
+}
+
+bool BlpopOperation::try_execute() {
+  auto result = connection_->try_blpop(keys_);
+  if (result.has_value()) {
+    std::string response = RespParser::format_blpop_response(result.value());
+    connection_->send_response(response);
+    connection_->remove_blocking_operation(shared_from_this());
+    return true;
+  }
+  return false;
+}
 
 class RedisServer {
 private:
