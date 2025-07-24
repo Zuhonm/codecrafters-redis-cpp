@@ -33,18 +33,18 @@ public:
 protected:
   std::shared_ptr<RedisConnection> connection_;
   steady_clock::time_point start_time_;
-  int timeout_seconds_;
+  int timeout_milliseconds_;
 public:
   BlockingOperation(std::shared_ptr<RedisConnection> conn, int timeout)
-    :connection_(conn), start_time_(steady_clock::now()), timeout_seconds_(timeout) {}
+    :connection_(conn), start_time_(steady_clock::now()), timeout_milliseconds_(timeout) {}
   std::shared_ptr<RedisConnection> get_connection() const { return connection_; }
-  bool is_timeout_enabled() const { return timeout_seconds_ > 0; }
-  std::chrono::seconds get_remaining_time() const {
+  bool is_timeout_enabled() const { return timeout_milliseconds_ > 0; }
+  std::chrono::milliseconds get_remaining_time() const {
     if (!is_timeout_enabled()) {
-      return seconds::max(); // No timeout
+      return milliseconds::max(); // No timeout
     }
-    auto elapsed = duration_cast<seconds>(steady_clock::now() - start_time_);
-    return seconds(timeout_seconds_) - elapsed;
+    auto elapsed = duration_cast<milliseconds>(steady_clock::now() - start_time_);
+    return milliseconds(timeout_milliseconds_) - elapsed;
   }
 };
 
@@ -618,9 +618,10 @@ private:
         }
       }
     } else if (cmd == "BLPOP" && command_parts.size() >= 3) {
-      int timeout = std::stoi(command_parts.back());
+      double d_timeout_milliseconds = std::stod(command_parts.back()) * 1000;
+      int i_timeout = static_cast<int>(d_timeout_milliseconds);
       std::vector<std::string> keys(command_parts.begin()+1, command_parts.end()-1);
-      auto blpop_op = std::make_shared<BlpopOperation>(shared_from_this(), keys, timeout);
+      auto blpop_op = std::make_shared<BlpopOperation>(shared_from_this(), keys, i_timeout);
       if (!blpop_op->try_execute()) {
         add_blocking_operation(blpop_op);
         blocking_manager_->add_blocking_operation(blpop_op);
