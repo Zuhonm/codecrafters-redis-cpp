@@ -215,14 +215,32 @@ private:
 };
 
 class RedisStore {
+public:
+  enum class DataType { STRING, LIST, STREAM, NONE };
 private:
   std::unordered_map<std::string, std::string> data_;
   std::unordered_map<std::string, std::chrono::steady_clock::time_point> expi_;
   std::unordered_map<std::string, std::vector<std::string>> list_;
   std::shared_ptr<BlockingOperationManager> blocking_manager_;
+  void cleanup_key(const std::string& key) { data_.erase(key); expi_.erase(key); list_.erase(key); }
 public:
   void set_blocking_manager(std::shared_ptr<BlockingOperationManager> blocking_manager) {
     blocking_manager_ = blocking_manager;
+  }
+  DataType get_type(const std::string& key) {
+    auto expi_it = expi_.find(key);
+    if (expi_it != expi_.end()) {
+      if (steady_clock::now() > expi_it->second) {
+        cleanup_key(key);
+        return DataType::NONE;
+      }
+    }
+    if (data_.find(key) != data_.end()) {
+      return DataType::STRING;
+    }
+    if (list_.find(key) != list_.end()) {
+      return DataType::LIST;
+    }
   }
   void set(const std::string& key, const std::string& value) {
     data_[key] = value;
@@ -627,6 +645,15 @@ private:
         blocking_manager_->add_blocking_operation(blpop_op);
       }
       return;
+    } else if (cmd == "TYPE" && command_parts.size() >= 2) {
+      RedisStore::DataType type = store_->get_type(command_parts[1]);
+      std::string type_str;
+      switch (type) {
+        case RedisStore::DataType::LIST : type_str = "list"; break;
+        case RedisStore::DataType::STRING : type_str = "string"; break;
+        case RedisStore::DataType::NONE:  type_str = "none"; break;
+      }
+      response = RespParser::format_simple_response(type_str);
     }
     do_write(response);
   }
