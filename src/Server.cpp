@@ -654,7 +654,7 @@ private:
       acceptor_.async_accept(
         [this](asio::error_code ec, tcp::socket socket) {
           if ( !ec ) {
-            std::make_shared<RedisConnection>(std::move(socket), store_)->start();
+            std::make_shared<RedisConnection>(std::move(socket), store_, blocking_manager_)->start();
           } else {
             std::cerr << "Accept error: " << ec.message() << std::endl;
           }
