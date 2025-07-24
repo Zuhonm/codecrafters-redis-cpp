@@ -424,7 +424,7 @@ public:
     return response;
   }
   static std::string format_blpop_response(const std::pair<std::string, std::string>& pair) {
-    std::string response = "*2\r\n" + std::to_string(pair.first.length()) + "\r\n" + pair.first + "\r\n"
+    std::string response = "*2\r\n$" + std::to_string(pair.first.length()) + "\r\n" + pair.first + "\r\n$"
                           + std::to_string(pair.second.length()) + "\r\n" + pair.second + "\r\n";
     return response;
   }
