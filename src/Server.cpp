@@ -632,6 +632,7 @@ private:
 };
 
 void BlpopOperation::handle_timeout() {
+  connection_->send_response(RespParser::format_null_bulk_response());
   connection_->remove_blocking_operation(shared_from_this());
 }
 
