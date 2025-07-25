@@ -564,7 +564,7 @@ public:
     for (const auto& entry : entries) {
       response += "*2\r\n$" + std::to_string(entry.id.length()) + "\r\n"
                 + entry.id + "\r\n"
-                + "*" + std::to_string(entry.field.size()) + "\r\n";
+                + "*" + std::to_string(2 * entry.field.size()) + "\r\n";
       for (const auto& f : entry.field) {
         response += "$" + std::to_string(f.first.size()) + "\r\n" + f.first + "\r\n";
         response += "$" + std::to_string(f.second.size()) + "\r\n" + f.second + "\r\n";
