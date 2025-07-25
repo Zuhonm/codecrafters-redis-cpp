@@ -36,6 +36,17 @@ private:
 public:
   RedisStream()
     :last_id_("0-0"), sequence_counter_(1) {};
+  struct CompareEntryByID {
+    bool operator()(const std::string& id, const StreamEntry& entry) {
+      return !is_id_greater_or_equal(id, entry.id);
+    }
+    bool operator()(const StreamEntry& entry, const std::string& id) {
+      return !is_id_greater_or_equal(entry.id, id);
+    }
+  };
+  std::string get_last_id() {
+    return last_id_;
+  }
   std::string add_entry(const std::string& id, const std::map<std::string, std::string>& fields) {
     std::string actual_id = id;
     if ( id == "*" ) {
@@ -61,11 +72,16 @@ public:
     last_id_ = actual_id;
     return actual_id;
   }
-  std::string get_last_id() {
-    return last_id_;
+  std::vector<StreamEntry> get_range(const std::string& start_id, const std::string& end_id) {
+    CompareEntryByID comp;
+    auto start_it = std::lower_bound(entries_.begin(), entries_.end(), start_id, comp);
+    auto end_it = std::upper_bound(entries_.begin(), entries_.end(), end_id, comp);
+    std::vector<StreamEntry> result;
+    result.assign(start_it, end_it);
+    return result;
   }
 private:
-  bool is_id_greater(const std::string& id1, const std::string& id2) {
+  static bool is_id_greater(const std::string& id1, const std::string& id2) {
     auto part1 = split_id(id1);
     auto part2 = split_id(id2);
     if (part1.first > part2.first) { return true; }
@@ -73,10 +89,12 @@ private:
     // becaues the id forms like -*, "*" is incremented, so we assert they won't be equal;
     return part1.second > part2.second;
   }
-  bool is_id_greater_or_equal(const std::string& id1, const std::string& id2) {
-    return id1 == id2 || is_id_greater(id1, id2);
+  static bool is_id_greater_or_equal(const std::string& id1, const std::string& id2) {
+    auto part1 = split_id(id1);
+    auto part2 = split_id(id2);
+    return part1 == part2 || is_id_greater(id1, id2);
   }
-  std::pair<std::uint64_t, std::uint64_t> split_id(const std::string& id) {
+  static std::pair<std::uint64_t, std::uint64_t> split_id(const std::string& id) {
     std::size_t dash_pos = id.find("-");
     if ( dash_pos == std::string::npos ) {
       return {std::stoull(id), 0};
@@ -454,6 +472,14 @@ public:
     std::string result = stream_[key]->add_entry(id, fields);
     return result;
   }
+  std::vector<StreamEntry> xrange(const std::string& key, const std::string& start, const std::string& end) {
+    auto it = stream_.find(key);
+    if (it == stream_.end()) {
+      return {};
+    }
+    auto result = it->second->get_range(start, end);
+    return result;
+  }
 };
 
 class RespParser {
@@ -530,6 +556,20 @@ public:
   }
   static std::string format_simple_error_response(const std::string& error_message) {
     std::string response = "-ERR " + error_message + "\r\n";
+    return response;
+  }
+  static std::string format_array_response(const std::vector<StreamEntry> entries) {
+    std::string response;
+    response = "*" + std::to_string(entries.size()) + "\r\n";
+    for (const auto& entry : entries) {
+      response += "*2\r\n$" + std::to_string(entry.id.length()) + "\r\n"
+                + entry.id + "\r\n"
+                + "*" + std::to_string(entry.field.size()) + "\r\n";
+      for (const auto& f : entry.field) {
+        response += "$" + std::to_string(f.first.size()) + "\r\n" + f.first + "\r\n";
+        response += "$" + std::to_string(f.second.size()) + "\r\n" + f.second + "\r\n";
+      }
+    }
     return response;
   }
 };
@@ -761,6 +801,9 @@ private:
           response = RespParser::format_simple_error_response("The ID specified in XADD is equal or smaller than the target stream top item");
         }
       }
+    } else if (cmd == "XRANGE" && command_parts.size() >= 4) {
+      std::vector<StreamEntry> result = store_->xrange(command_parts[1], command_parts[2], command_parts[3]);
+      response = RespParser::format_array_response(result);
     }
     do_write(response);
   }
