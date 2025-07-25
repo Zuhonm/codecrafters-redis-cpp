@@ -75,7 +75,7 @@ public:
   std::vector<StreamEntry> get_range(const std::string& start_id, const std::string& end_id) {
     CompareEntryByID comp;
     std::vector<StreamEntry>::iterator start_it = entries_.begin();
-    std::vector<StreamEntry>::iterator end_it = entries_.end() + 1;
+    std::vector<StreamEntry>::iterator end_it = entries_.end();
     if (start_id != "-") {
       start_it = std::lower_bound(entries_.begin(), entries_.end(), start_id, comp);
     }
