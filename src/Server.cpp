@@ -74,8 +74,14 @@ public:
   }
   std::vector<StreamEntry> get_range(const std::string& start_id, const std::string& end_id) {
     CompareEntryByID comp;
-    auto start_it = std::lower_bound(entries_.begin(), entries_.end(), start_id, comp);
-    auto end_it = std::upper_bound(entries_.begin(), entries_.end(), end_id, comp);
+    std::vector<StreamEntry>::iterator start_it = entries_.begin();
+    std::vector<StreamEntry>::iterator end_it = entries_.end() + 1;
+    if (start_id != "-") {
+      start_it = std::lower_bound(entries_.begin(), entries_.end(), start_id, comp);
+    }
+    if (end_id != "+") {
+      auto end_it = std::upper_bound(entries_.begin(), entries_.end(), end_id, comp);
+    }
     std::vector<StreamEntry> result;
     result.assign(start_it, end_it);
     return result;
