@@ -38,7 +38,14 @@ public:
     :last_id_("0-0"), sequence_counter_(1) {};
   std::string add_entry(const std::string& id, const std::map<std::string, std::string>& fields) {
     std::string actual_id = id;
-    if ( id.find("-*") != std::string::npos ) {
+    if ( id == "*" ) {
+      auto now = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+      auto last_id_time_stamp_part = split_id(last_id_).first;
+      if (last_id_time_stamp_part != static_cast<uint64_t>(now)) {
+        sequence_counter_ = 0;
+      }
+      actual_id = std::to_string(now) + "-" + std::to_string(sequence_counter_++);
+    } else if ( id.find("-*") != std::string::npos ) {
       actual_id.pop_back();
       auto time_stamp_part = std::stoull(actual_id.substr(0, actual_id.find("-")));
       auto last_id_time_stamp_part = split_id(last_id_).first;
