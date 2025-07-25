@@ -31,12 +31,37 @@ struct StreamEntry {
 class RedisStream {
 private:
   std::vector<StreamEntry> entries_;
+  std::string last_id_;
 public:
-  RedisStream() = default;
+  RedisStream()
+    :last_id_("0-0") {};
   std::string add_entry(const std::string& id, const std::map<std::string, std::string>& fields) {
+    if (!is_id_greater(id, last_id_)) {
+      return "";
+    }
     std::string actual_id = id;
     entries_.emplace_back(actual_id, fields);
+    last_id_ = id;
     return actual_id;
+  }
+private:
+  bool is_id_greater(const std::string& id1, const std::string& id2) {
+    auto part1 = split_id(id1);
+    auto part2 = split_id(id2);
+    if (part1.first > part2.first) { return true; }
+    if (part1.first < part2.first) { return false; }
+    // becaues the id forms like -*, "*" is incremented, so we assert they won't be equal;
+    return part1.second > part2.second;
+  }
+  bool is_id_greater_or_equal(const std::string& id1, const std::string& id2) {
+    return id1 == id2 || is_id_greater(id1, id2);
+  }
+  std::pair<std::uint64_t, std::uint64_t> split_id(const std::string& id) {
+    std::size_t dash_pos = id.find("-");
+    if ( dash_pos == std::string::npos ) {
+      return {std::stoull(id), 0};
+    }
+    return {std::stoull(id.substr(0, dash_pos)), std::stoull(id.substr(dash_pos+1))};
   }
 };
 
@@ -483,6 +508,10 @@ public:
                           + std::to_string(pair.second.length()) + "\r\n" + pair.second + "\r\n";
     return response;
   }
+  static std::string format_simple_error_response(const std::string& error_message) {
+    std::string response = "-ERR " + error_message + "\r\n";
+    return response;
+  }
 };
 
 class RedisConnection : public std::enable_shared_from_this<RedisConnection> {
@@ -706,8 +735,7 @@ private:
       if (!entry_id.empty()) {
         response = RespParser::format_bulk_response(entry_id);
       } else {
-        // I don't sure it is right?
-        response = RespParser::format_null_bulk_response();
+        response = RespParser::format_simple_error_response("The ID specified in XADD is equal or smaller than the target stream top item");
       }
     }
     do_write(response);
