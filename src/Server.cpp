@@ -10,6 +10,7 @@
 #include <vector>
 #include <unordered_set>
 #include <optional>
+#include <map>
 #include <asio.hpp>
 
 using asio::ip::tcp;
@@ -19,6 +20,25 @@ using namespace std::chrono;
 class RedisConnection;
 class BlockingOperationManager;
 class EventNotificationSystem;
+
+struct StreamEntry {
+  std::string id;
+  std::map<std::string, std::string> field;
+  StreamEntry(const std::string& entry_id, const std::map<std::string, std::string>& entry_field)
+    : id(entry_id), field(entry_field) {}
+};
+
+class RedisStream {
+private:
+  std::vector<StreamEntry> entries_;
+public:
+  RedisStream() = default;
+  std::string add_entry(const std::string& id, const std::map<std::string, std::string>& fields) {
+    std::string actual_id = id;
+    entries_.emplace_back(actual_id, fields);
+    return actual_id;
+  }
+};
 
 // basic interface for blocking operations
 class BlockingOperation {
@@ -221,8 +241,9 @@ private:
   std::unordered_map<std::string, std::string> data_;
   std::unordered_map<std::string, std::chrono::steady_clock::time_point> expi_;
   std::unordered_map<std::string, std::vector<std::string>> list_;
+  std::unordered_map<std::string, std::unique_ptr<RedisStream>> stream_;
   std::shared_ptr<BlockingOperationManager> blocking_manager_;
-  void cleanup_key(const std::string& key) { data_.erase(key); expi_.erase(key); list_.erase(key); }
+  void cleanup_key(const std::string& key) { data_.erase(key); expi_.erase(key); list_.erase(key); stream_.erase(key); }
 public:
   void set_blocking_manager(std::shared_ptr<BlockingOperationManager> blocking_manager) {
     blocking_manager_ = blocking_manager;
@@ -241,14 +262,17 @@ public:
     if (list_.find(key) != list_.end()) {
       return DataType::LIST;
     }
+    if (stream_.find(key) != stream_.end()) {
+      return DataType::STREAM;
+    }
     return DataType::NONE;
   }
   void set(const std::string& key, const std::string& value) {
+    cleanup_key(key);
     data_[key] = value;
-    expi_.erase(key); // Remove any existing expiration
-    list_.erase(key); // Remove any existing list
   }
   void set(const std::string& key, const std::string& value, int ttl) {
+    cleanup_key(key);
     data_[key] = value;
     expi_[key] = steady_clock::now() + milliseconds(ttl);
   }
@@ -265,8 +289,7 @@ public:
     return data_it != data_.end() ? data_it->second : "";
   }
   std::size_t rpush(const std::string& key, const std::vector<std::string>::const_iterator begin, const std::vector<std::string>::const_iterator end) {
-    data_.erase(key);
-    expi_.erase(key);
+    cleanup_key(key);
     auto& list = list_[key];
     list.insert(list.end(), begin, end);
     std::size_t result = list.size();
@@ -307,8 +330,7 @@ public:
     return std::vector<std::string>(list.begin() + start, list.begin() + end + 1);
   }
   std::size_t lpush(const std::string& key, const std::vector<std::string>::const_iterator begin, const std::vector<std::string>::const_iterator end) {
-    data_.erase(key);
-    expi_.erase(key);
+    cleanup_key(key);
     auto& list = list_[key];
     std::vector<std::string> temp(begin, end);
     std::reverse(temp.begin(), temp.end());
@@ -372,6 +394,14 @@ public:
       }
     }
     return std::nullopt;
+  }
+  std::string xadd(const std::string& key, const std::string& id, const std::map<std::string, std::string>& fields) {
+    cleanup_key(key);
+    if (stream_.find(key) == stream_.end()) {
+      stream_[key] = std::make_unique<RedisStream>();
+    }
+    std::string result = stream_[key]->add_entry(id, fields);
+    return result;
   }
 };
 
@@ -653,9 +683,26 @@ private:
         case RedisStore::DataType::LIST : type_str = "list"; break;
         case RedisStore::DataType::STRING : type_str = "string"; break;
         case RedisStore::DataType::NONE:  type_str = "none"; break;
+        case RedisStore::DataType::STREAM: type_str = "stream"; break;
         default: type_str = "none"; break;
       }
       response = RespParser::format_simple_response(type_str);
+    } else if (cmd == "xadd" && command_parts.size() >= 5) {
+      std::string key = command_parts[1];
+      std::string id = command_parts[2];
+      std::map<std::string, std::string> fields;
+      for (size_t i = 3; i < command_parts.size(); i += 2) {
+        if (i + 1 < command_parts.size()) {
+          fields[command_parts[i]] = command_parts[i+1];
+        }
+      }
+      std::string entry_id = store_->xadd(key, id, fields);
+      if (!entry_id.empty()) {
+        response = RespParser::format_bulk_response(entry_id);
+      } else {
+        // I don't sure it is right?
+        response = RespParser::format_null_bulk_response();
+      }
     }
     do_write(response);
   }
