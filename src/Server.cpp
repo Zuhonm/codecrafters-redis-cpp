@@ -735,7 +735,11 @@ private:
       if (!entry_id.empty()) {
         response = RespParser::format_bulk_response(entry_id);
       } else {
-        response = RespParser::format_simple_error_response("The ID specified in XADD is equal or smaller than the target stream top item");
+        if (id == "0-0") {
+          response = RespParser::format_simple_error_response("The ID specified in XADD must be greater than 0-0");
+        } else {
+          response = RespParser::format_simple_error_response("The ID specified in XADD is equal or smaller than the target stream top item");
+        }
       }
     }
     do_write(response);
