@@ -80,7 +80,7 @@ public:
       start_it = std::lower_bound(entries_.begin(), entries_.end(), start_id, comp);
     }
     if (end_id != "+") {
-      auto end_it = std::upper_bound(entries_.begin(), entries_.end(), end_id, comp);
+      end_it = std::upper_bound(entries_.begin(), entries_.end(), end_id, comp);
     }
     std::vector<StreamEntry> result;
     result.assign(start_it, end_it);
