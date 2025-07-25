@@ -687,7 +687,7 @@ private:
         default: type_str = "none"; break;
       }
       response = RespParser::format_simple_response(type_str);
-    } else if (cmd == "xadd" && command_parts.size() >= 5) {
+    } else if (cmd == "XADD" && command_parts.size() >= 5) {
       std::string key = command_parts[1];
       std::string id = command_parts[2];
       std::map<std::string, std::string> fields;
