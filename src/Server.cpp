@@ -32,17 +32,30 @@ class RedisStream {
 private:
   std::vector<StreamEntry> entries_;
   std::string last_id_;
+  std::uint64_t sequence_counter_;
 public:
   RedisStream()
-    :last_id_("0-0") {};
+    :last_id_("0-0"), sequence_counter_(1) {};
   std::string add_entry(const std::string& id, const std::map<std::string, std::string>& fields) {
-    if (!is_id_greater(id, last_id_)) {
+    std::string actual_id = id;
+    if ( id.find("-*") != std::string::npos ) {
+      actual_id.pop_back();
+      auto time_stamp_part = std::stoull(actual_id.substr(0, actual_id.find("-")));
+      auto last_id_time_stamp_part = split_id(last_id_).first;
+      if (time_stamp_part != last_id_time_stamp_part) {
+        sequence_counter_ = 0;
+      }
+      actual_id.append(std::to_string(sequence_counter_++));
+    }
+    if (!is_id_greater(actual_id, last_id_)) {
       return "";
     }
-    std::string actual_id = id;
     entries_.emplace_back(actual_id, fields);
-    last_id_ = id;
+    last_id_ = actual_id;
     return actual_id;
+  }
+  std::string get_last_id() {
+    return last_id_;
   }
 private:
   bool is_id_greater(const std::string& id1, const std::string& id2) {
