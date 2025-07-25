@@ -289,7 +289,9 @@ public:
     return data_it != data_.end() ? data_it->second : "";
   }
   std::size_t rpush(const std::string& key, const std::vector<std::string>::const_iterator begin, const std::vector<std::string>::const_iterator end) {
-    cleanup_key(key);
+    if (get_type(key) != DataType::LIST) {
+      cleanup_key(key);
+    }
     auto& list = list_[key];
     list.insert(list.end(), begin, end);
     std::size_t result = list.size();
@@ -330,7 +332,9 @@ public:
     return std::vector<std::string>(list.begin() + start, list.begin() + end + 1);
   }
   std::size_t lpush(const std::string& key, const std::vector<std::string>::const_iterator begin, const std::vector<std::string>::const_iterator end) {
-    cleanup_key(key);
+    if (get_type(key) != DataType::LIST) {
+      cleanup_key(key);
+    }
     auto& list = list_[key];
     std::vector<std::string> temp(begin, end);
     std::reverse(temp.begin(), temp.end());
@@ -396,7 +400,9 @@ public:
     return std::nullopt;
   }
   std::string xadd(const std::string& key, const std::string& id, const std::map<std::string, std::string>& fields) {
-    cleanup_key(key);
+    if (get_type(key) != DataType::STREAM) {
+      cleanup_key(key);
+    }
     if (stream_.find(key) == stream_.end()) {
       stream_[key] = std::make_unique<RedisStream>();
     }
