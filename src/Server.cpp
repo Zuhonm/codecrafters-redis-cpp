@@ -525,7 +525,7 @@ public:
   }
   std::optional<std::vector<std::pair<std::string, std::vector<StreamEntry>>>> try_xread(std::vector<std::pair<std::string, std::string>>& stream_ids) {
     std::vector<std::pair<std::string, std::vector<StreamEntry>>> result;
-    for ( auto stream_id : stream_ids ) {
+    for ( auto& stream_id : stream_ids ) {
       std::string key = stream_id.first;
       std::string id = stream_id.second;
       auto it = stream_.find(key);
@@ -533,11 +533,12 @@ public:
         continue;
       }
       if (id == "$") {
-        id = stream_[key]->get_last_id();
+        stream_id.second = stream_[key]->get_last_id();
+        continue;
       }
       auto entries = stream_[key]->get_range(id, "+");
       // according to redis, we need id ">" not ">="
-      if (entries.size() > 1 && RedisStream::is_id_equal(id, entries.front().id)) {
+      if (RedisStream::is_id_equal(id, entries.front().id)) {
         entries.erase(entries.begin());
       }
       if (entries.size() > 0) {
