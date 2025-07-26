@@ -489,7 +489,7 @@ public:
     auto result = it->second->get_range(start, end);
     return result;
   }
-  std::optional<std::map<std::string, std::vector<StreamEntry>>> try_xread(const std::map<std::string, std::string>& stream_ids) {
+  std::optional<std::map<std::string, std::vector<StreamEntry>>> try_xread(const std::vector<std::pair<std::string, std::string>>& stream_ids) {
     std::map<std::string, std::vector<StreamEntry>> result;
     for ( auto stream_id : stream_ids ) {
       std::string key = stream_id.first;
@@ -849,7 +849,7 @@ private:
       std::vector<StreamEntry> result = store_->xrange(command_parts[1], command_parts[2], command_parts[3]);
       response = RespParser::format_array_response(result);
     } else if (cmd == "XREAD" && command_parts.size() >= 4) {
-      std::map<std::string, std::string> stream_id;
+      std::vector<std::pair<std::string, std::string>> stream_id;
       std::size_t entries_size;
       auto it = command_parts.begin() + 1;
       if ( to_upper(*it) == "STREAMS" ) { it += 1; }
@@ -857,7 +857,7 @@ private:
       entries_size = (command_parts.end() - it) / 2;
       auto entries_end = it + entries_size;
       for (it = it; it < entries_end; it++) {
-        stream_id.insert({*it, *(it+entries_size)});
+        stream_id.push_back({*it, *(it+entries_size)});
       }     
       auto result = store_->try_xread(stream_id);
       if (result.has_value()) {
