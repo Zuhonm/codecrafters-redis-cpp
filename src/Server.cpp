@@ -537,7 +537,9 @@ public:
       if (RedisStream::is_id_equal(id, entries.front().id)) {
         entries.erase(entries.begin());
       }
-      result.push_back({key, entries});
+      if (entries.size() > 0) {
+        result.push_back({key, entries});
+      }
     }
     if (result.size() > 0) {
       return result;
@@ -949,7 +951,6 @@ bool XreadOperation::try_execute() {
   auto result = connection_->try_xread(stream_ids_);
   if (result.has_value()) {
     std::string response = RespParser::format_xread_response(result.value());
-    std::cout << response;
     connection_->send_response(response);
     connection_->remove_blocking_operation(shared_from_this());
     return true;
