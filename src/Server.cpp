@@ -164,7 +164,7 @@ class XreadOperation : public BlockingOperation,
 private:
   std::vector<std::pair<std::string, std::string>> stream_ids_;
 public:
-  XreadOperation(std::shared_ptr<RedisConnection> conn, const std::vector<std::pair<std::string, std::string>>& stream_ids, int timeout)
+  XreadOperation(std::shared_ptr<RedisConnection> conn, std::vector<std::pair<std::string, std::string>>& stream_ids, int timeout)
     :BlockingOperation(conn, timeout), stream_ids_(std::move(stream_ids)) {}
   Type get_type() const override { return Type::XREAD; }
   bool is_expired() const override {
@@ -523,7 +523,7 @@ public:
     auto result = it->second->get_range(start, end);
     return result;
   }
-  std::optional<std::vector<std::pair<std::string, std::vector<StreamEntry>>>> try_xread(const std::vector<std::pair<std::string, std::string>>& stream_ids) {
+  std::optional<std::vector<std::pair<std::string, std::vector<StreamEntry>>>> try_xread(std::vector<std::pair<std::string, std::string>>& stream_ids) {
     std::vector<std::pair<std::string, std::vector<StreamEntry>>> result;
     for ( auto stream_id : stream_ids ) {
       std::string key = stream_id.first;
@@ -532,9 +532,12 @@ public:
       if ( it == stream_.end() ) {
         continue;
       }
+      if (id == "$") {
+        id = stream_[key]->get_last_id();
+      }
       auto entries = stream_[key]->get_range(id, "+");
       // according to redis, we need id ">" not ">="
-      if (RedisStream::is_id_equal(id, entries.front().id)) {
+      if (entries.size() > 1 && RedisStream::is_id_equal(id, entries.front().id)) {
         entries.erase(entries.begin());
       }
       if (entries.size() > 0) {
@@ -688,7 +691,7 @@ public:
   std::optional<std::pair<std::string, std::string>> try_blpop(const std::vector<std::string>& keys) {
     return store_->try_blpop(keys);
   }
-  std::optional<std::vector<std::pair<std::string, std::vector<StreamEntry>>>> try_xread(const std::vector<std::pair<std::string, std::string>>& stream_ids) {
+  std::optional<std::vector<std::pair<std::string, std::vector<StreamEntry>>>> try_xread(std::vector<std::pair<std::string, std::string>>& stream_ids) {
     return store_->try_xread(stream_ids);
   }
 private:
