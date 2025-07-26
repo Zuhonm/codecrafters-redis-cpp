@@ -890,7 +890,7 @@ private:
     } else if (cmd == "XREAD" && command_parts.size() >= 4) {
       std::vector<std::pair<std::string, std::string>> stream_ids;
       std::size_t entries_size;
-      int millisecond_timeout = 0;
+      int millisecond_timeout = -1;
       auto it = command_parts.begin() + 1;
       if ( to_upper(*it) == "BLOCK" ) { 
         it += 1;
@@ -905,7 +905,7 @@ private:
         stream_ids.push_back({*it, *(it+entries_size)});
       }
       // handle block
-      if (millisecond_timeout > 0) {
+      if (millisecond_timeout >= 0) {
         auto xread_op = std::make_shared<XreadOperation>(shared_from_this(), stream_ids, millisecond_timeout);
         if (!xread_op->try_execute()) {
           add_blocking_operation(xread_op);
