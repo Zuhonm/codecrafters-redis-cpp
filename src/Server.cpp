@@ -86,7 +86,12 @@ public:
     result.assign(start_it, end_it);
     return result;
   }
-private:
+  static bool is_id_equal(const std::string& id1, const std::string& id2) {
+    auto part1 = split_id(id1);
+    auto part2 = split_id(id2);
+    return part1 == part2;
+  }
+  private:
   static bool is_id_greater(const std::string& id1, const std::string& id2) {
     auto part1 = split_id(id1);
     auto part2 = split_id(id2);
@@ -96,9 +101,7 @@ private:
     return part1.second > part2.second;
   }
   static bool is_id_greater_or_equal(const std::string& id1, const std::string& id2) {
-    auto part1 = split_id(id1);
-    auto part2 = split_id(id2);
-    return part1 == part2 || is_id_greater(id1, id2);
+    return is_id_equal(id1, id2) || is_id_greater(id1, id2);
   }
   static std::pair<std::uint64_t, std::uint64_t> split_id(const std::string& id) {
     std::size_t dash_pos = id.find("-");
@@ -486,6 +489,28 @@ public:
     auto result = it->second->get_range(start, end);
     return result;
   }
+  std::optional<std::map<std::string, std::vector<StreamEntry>>> try_xread(const std::map<std::string, std::string>& stream_ids) {
+    std::map<std::string, std::vector<StreamEntry>> result;
+    for ( auto stream_id : stream_ids ) {
+      std::string key = stream_id.first;
+      std::string id = stream_id.second;
+      auto it = stream_.find(key);
+      if ( it == stream_.end() ) {
+        continue;
+      }
+      auto entries = stream_[key]->get_range(id, "+");
+      // according to redis, we need id ">" not ">="
+      if (RedisStream::is_id_equal(id, entries.front().id)) {
+        entries.erase(entries.begin());
+      }
+      result[key] = entries;
+    }
+    if (result.size() > 0) {
+      return result;
+    } else {
+      return std::nullopt;
+    }
+  }
 };
 
 class RespParser {
@@ -575,6 +600,14 @@ public:
         response += "$" + std::to_string(f.first.size()) + "\r\n" + f.first + "\r\n";
         response += "$" + std::to_string(f.second.size()) + "\r\n" + f.second + "\r\n";
       }
+    }
+    return response;
+  }
+  static std::string format_xread_response(std::map<std::string, std::vector<StreamEntry>>& stream_entries) {
+    std::string response = "*" + std::to_string(stream_entries.size()) + "\r\n";
+    for (auto it : stream_entries) {
+      response += "*2\r\n$" + std::to_string(it.first.length()) + "\r\n" + it.first + "\r\n";
+      response += format_array_response(it.second);
     }
     return response;
   }
@@ -706,6 +739,11 @@ private:
     }
     return pos;
   }
+  std::string to_upper(const std::string& str) {
+    std::string result;
+    std::transform(str.begin(), str.end(), std::back_inserter(result), ::toupper);
+    return result;
+  }
   void do_process_command(const std::string& command) {
     auto command_parts = RespParser::parse(command);
     if (command_parts.empty())  {
@@ -810,6 +848,24 @@ private:
     } else if (cmd == "XRANGE" && command_parts.size() >= 4) {
       std::vector<StreamEntry> result = store_->xrange(command_parts[1], command_parts[2], command_parts[3]);
       response = RespParser::format_array_response(result);
+    } else if (cmd == "XREAD" && command_parts.size() >= 4) {
+      std::map<std::string, std::string> stream_id;
+      std::size_t entries_size;
+      auto it = command_parts.begin() + 1;
+      if ( to_upper(*it) == "STREAMS" ) { it += 1; }
+
+      entries_size = (command_parts.end() - it) / 2;
+      auto entries_end = it + entries_size;
+      for (it = it; it < entries_end; it++) {
+        stream_id.insert({*it, *(it+entries_size)});
+      }     
+      auto result = store_->try_xread(stream_id);
+      if (result.has_value()) {
+        response = RespParser::format_xread_response(result.value());
+      } else {
+        // I'm not sure is it correct
+        response = RespParser::format_null_bulk_response();
+      }
     }
     do_write(response);
   }
