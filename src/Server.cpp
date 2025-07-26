@@ -115,7 +115,7 @@ public:
 // basic interface for blocking operations
 class BlockingOperation {
 public:
-  enum class Type { BLPOP };
+  enum class Type { BLPOP, XREAD };
   virtual ~BlockingOperation() = default;
   virtual Type get_type() const = 0;
   virtual bool is_expired() const = 0;
@@ -159,9 +159,34 @@ public:
   bool try_execute() override;
 };
 
+class XreadOperation : public BlockingOperation,
+                       public std::enable_shared_from_this<XreadOperation> {
+private:
+  std::vector<std::pair<std::string, std::string>> stream_ids_;
+public:
+  XreadOperation(std::shared_ptr<RedisConnection> conn, const std::vector<std::pair<std::string, std::string>>& stream_ids, int timeout)
+    :BlockingOperation(conn, timeout), stream_ids_(std::move(stream_ids)) {}
+  Type get_type() const override { return Type::XREAD; }
+  bool is_expired() const override {
+    if (!is_timeout_enabled()) {
+      return false;
+    }
+    return get_remaining_time() <= seconds(0);
+  }
+  std::vector<std::string> get_watched_keys() const override {
+    std::vector<std::string> result;
+    for (const auto& stream_id : stream_ids_) {
+      result.push_back(stream_id.first);
+    }
+    return result;
+  }
+  void handle_timeout() override;
+  bool try_execute() override;
+};
+
 class EventNotificationSystem {
 public:
-  enum class EventType { LIST_PUSH, LIST_POP };
+  enum class EventType { LIST_PUSH, LIST_POP, STREAM_ADD };
   struct Event{
     EventType type;
     std::string key;
@@ -226,6 +251,8 @@ private:
     switch (event.type) {
       case EventType::LIST_PUSH:
         return op->get_type() == BlockingOperation::Type::BLPOP;
+      case EventType::STREAM_ADD:
+        return op->get_type() == BlockingOperation::Type::XREAD;
       default:
         return false; // Unsupported event type
     }
@@ -479,6 +506,13 @@ public:
       stream_[key] = std::make_unique<RedisStream>();
     }
     std::string result = stream_[key]->add_entry(id, fields);
+    
+    if (blocking_manager_) {
+      blocking_manager_->emit_event(
+        EventNotificationSystem::Event(EventNotificationSystem::EventType::STREAM_ADD, key, {result})
+      );
+    }
+
     return result;
   }
   std::vector<StreamEntry> xrange(const std::string& key, const std::string& start, const std::string& end) {
@@ -651,6 +685,9 @@ public:
   }
   std::optional<std::pair<std::string, std::string>> try_blpop(const std::vector<std::string>& keys) {
     return store_->try_blpop(keys);
+  }
+  std::optional<std::vector<std::pair<std::string, std::vector<StreamEntry>>>> try_xread(const std::vector<std::pair<std::string, std::string>>& stream_ids) {
+    return store_->try_xread(stream_ids);
   }
 private:
   void do_read() {
@@ -849,17 +886,33 @@ private:
       std::vector<StreamEntry> result = store_->xrange(command_parts[1], command_parts[2], command_parts[3]);
       response = RespParser::format_array_response(result);
     } else if (cmd == "XREAD" && command_parts.size() >= 4) {
-      std::vector<std::pair<std::string, std::string>> stream_id;
+      std::vector<std::pair<std::string, std::string>> stream_ids;
       std::size_t entries_size;
+      int millisecond_timeout = 0;
       auto it = command_parts.begin() + 1;
+      if ( to_upper(*it) == "BLOCK" ) { 
+        it += 1;
+        millisecond_timeout = std::stoi(*it);
+        it += 1;
+      }
       if ( to_upper(*it) == "STREAMS" ) { it += 1; }
 
       entries_size = (command_parts.end() - it) / 2;
       auto entries_end = it + entries_size;
       for (it = it; it < entries_end; it++) {
-        stream_id.push_back({*it, *(it+entries_size)});
-      }     
-      auto result = store_->try_xread(stream_id);
+        stream_ids.push_back({*it, *(it+entries_size)});
+      }
+      // handle block
+      if (millisecond_timeout > 0) {
+        auto xread_op = std::make_shared<XreadOperation>(shared_from_this(), stream_ids, millisecond_timeout);
+        if (!xread_op->try_execute()) {
+          add_blocking_operation(xread_op);
+          blocking_manager_->add_blocking_operation(xread_op);
+        }
+        return;
+      }
+      // normal
+      auto result = store_->try_xread(stream_ids);
       if (result.has_value()) {
         response = RespParser::format_xread_response(result.value());
       } else {
@@ -880,6 +933,22 @@ bool BlpopOperation::try_execute() {
   auto result = connection_->try_blpop(keys_);
   if (result.has_value()) {
     std::string response = RespParser::format_blpop_response(result.value());
+    connection_->send_response(response);
+    connection_->remove_blocking_operation(shared_from_this());
+    return true;
+  }
+  return false;
+}
+
+void XreadOperation::handle_timeout() {
+  connection_->send_response(RespParser::format_null_bulk_response());
+  connection_->remove_blocking_operation(shared_from_this());
+}
+
+bool XreadOperation::try_execute() {
+  auto result = connection_->try_xread(stream_ids_);
+  if (result.has_value()) {
+    std::string response = RespParser::format_xread_response(result.value());
     connection_->send_response(response);
     connection_->remove_blocking_operation(shared_from_this());
     return true;
