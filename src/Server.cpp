@@ -949,6 +949,7 @@ bool XreadOperation::try_execute() {
   auto result = connection_->try_xread(stream_ids_);
   if (result.has_value()) {
     std::string response = RespParser::format_xread_response(result.value());
+    std::cout << response;
     connection_->send_response(response);
     connection_->remove_blocking_operation(shared_from_this());
     return true;
