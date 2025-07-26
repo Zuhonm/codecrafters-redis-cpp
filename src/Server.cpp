@@ -489,8 +489,8 @@ public:
     auto result = it->second->get_range(start, end);
     return result;
   }
-  std::optional<std::map<std::string, std::vector<StreamEntry>>> try_xread(const std::vector<std::pair<std::string, std::string>>& stream_ids) {
-    std::map<std::string, std::vector<StreamEntry>> result;
+  std::optional<std::vector<std::pair<std::string, std::vector<StreamEntry>>>> try_xread(const std::vector<std::pair<std::string, std::string>>& stream_ids) {
+    std::vector<std::pair<std::string, std::vector<StreamEntry>>> result;
     for ( auto stream_id : stream_ids ) {
       std::string key = stream_id.first;
       std::string id = stream_id.second;
@@ -503,7 +503,7 @@ public:
       if (RedisStream::is_id_equal(id, entries.front().id)) {
         entries.erase(entries.begin());
       }
-      result[key] = entries;
+      result.push_back({key, entries});
     }
     if (result.size() > 0) {
       return result;
@@ -603,7 +603,7 @@ public:
     }
     return response;
   }
-  static std::string format_xread_response(std::map<std::string, std::vector<StreamEntry>>& stream_entries) {
+  static std::string format_xread_response(std::vector<std::pair<std::string, std::vector<StreamEntry>>>& stream_entries) {
     std::string response = "*" + std::to_string(stream_entries.size()) + "\r\n";
     for (auto it : stream_entries) {
       response += "*2\r\n$" + std::to_string(it.first.length()) + "\r\n" + it.first + "\r\n";
