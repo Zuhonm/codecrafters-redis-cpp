@@ -375,15 +375,21 @@ public:
     data_[key] = value;
     expi_[key] = steady_clock::now() + milliseconds(ttl);
   }
-  int incr(const std::string& key) {
+  std::optional<int> incr(const std::string& key) {
     auto it = data_.find(key);
     if (it == data_.end()) {
       set(key, "1");
       return 1;
     }
-    int value = std::stoi(get(key)) + 1;
-    set(key, std::to_string(value));
-    return value;
+    std::string value = get(key);
+    for (auto c : value) {
+      if (!isdigit(c)) {
+        return std::nullopt;
+      }
+    }
+    int num = std::stoi(value) + 1;
+    set(key, std::to_string(num));
+    return num;
   }
   std::string get(const std::string& key) {
     auto exp_it = expi_.find(key);
@@ -822,8 +828,12 @@ private:
         response = RespParser::format_simple_response("OK");
       }
     } else if (cmd == "INCR" && command_parts.size() >= 2) {
-      int value = store_->incr(command_parts[1]);
-      response = RespParser::format_integer_response(value);
+      auto value = store_->incr(command_parts[1]);
+      if (value.has_value()) {
+        response = RespParser::format_integer_response(value.value());
+      } else {
+        response = RespParser::format_simple_error_response("value is not an integer or out of range");
+      }
     } else if (cmd == "GET" && command_parts.size() >= 2) {
       std::string value = store_->get(command_parts[1]);
       if (!value.empty()) {
