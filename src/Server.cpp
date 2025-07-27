@@ -375,6 +375,16 @@ public:
     data_[key] = value;
     expi_[key] = steady_clock::now() + milliseconds(ttl);
   }
+  int incr(const std::string& key) {
+    auto it = data_.find(key);
+    if (it == data_.end()) {
+      set(key, "0");
+      return 0;
+    }
+    int value = std::stoi(get(key)) + 1;
+    set(key, std::to_string(value));
+    return value;
+  }
   std::string get(const std::string& key) {
     auto exp_it = expi_.find(key);
     if (exp_it != expi_.end()) {
@@ -811,6 +821,9 @@ private:
         store_->set(command_parts[1], command_parts[2]);
         response = RespParser::format_simple_response("OK");
       }
+    } else if (cmd == "INCR" && command_parts.size() >= 2) {
+      int value = store_->incr(command_parts[1]);
+      response = RespParser::format_integer_response(value);
     } else if (cmd == "GET" && command_parts.size() >= 2) {
       std::string value = store_->get(command_parts[1]);
       if (!value.empty()) {
