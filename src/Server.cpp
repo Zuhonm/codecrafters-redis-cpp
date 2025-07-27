@@ -378,8 +378,8 @@ public:
   int incr(const std::string& key) {
     auto it = data_.find(key);
     if (it == data_.end()) {
-      set(key, "0");
-      return 0;
+      set(key, "1");
+      return 1;
     }
     int value = std::stoi(get(key)) + 1;
     set(key, std::to_string(value));
