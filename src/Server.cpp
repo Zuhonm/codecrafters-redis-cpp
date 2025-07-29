@@ -38,22 +38,30 @@ struct QueuedCommand {
 class TransactionState {
 private:
   bool in_transaction_;
+  bool discard_transaction_;
   std::queue<QueuedCommand> queued_commands_;
 public:
   TransactionState()
-    :in_transaction_(false) {};
+    :in_transaction_(false), discard_transaction_(false) {};
   bool is_in_transaction() const { return in_transaction_; }
   void start_transaction() {
     in_transaction_ = true;
+    discard_transaction_ = false;
     while (!queued_commands_.empty()) {
       queued_commands_.pop();
     }
   }
   void end_transaction() {
     in_transaction_ = false;
+    discard_transaction_ = false;
     while (!queued_commands_.empty()) {
       queued_commands_.pop();
     }
+  }
+  bool is_discard_transaction() const { return discard_transaction_; }
+  void discard_transaction() {
+    discard_transaction_ = true;
+    end_transaction();
   }
   void queue_command(const std::vector<std::string>& command) {
     if (in_transaction_) {
@@ -866,6 +874,9 @@ private:
     } else if (cmd == "EXEC") {
       if (!transaction_state_->is_in_transaction()) {
         response = RespParser::format_simple_error_response("EXEC without MULTI");
+      } else if (transaction_state_->is_discard_transaction()) {
+        response = RespParser::format_null_bulk_response();
+        transaction_state_->end_transaction();
       } else {
         std::vector<std::string> responses;
         auto queued_commands = transaction_state_->get_queued_commands();
@@ -877,6 +888,13 @@ private:
         }
         transaction_state_->end_transaction();
         response = RespParser::format_transaction_response(responses);
+      }
+    } else if (cmd == "DISCARD") {
+      if (!transaction_state_->is_in_transaction()) {
+        response = RespParser::format_simple_error_response("DISCARD without MULTI");
+      } else {
+        transaction_state_->discard_transaction();
+        response = RespParser::format_simple_response("OK");
       }
     } else if (transaction_state_->is_in_transaction()) {
       if (cmd == "BLPOP" || cmd == "XREAD") {
