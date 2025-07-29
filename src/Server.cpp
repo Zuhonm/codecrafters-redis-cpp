@@ -1126,10 +1126,15 @@ int main(int argc, char **argv) {
   // Flush after every std::cout / std::cerr
   std::cout << std::unitbuf;
   std::cerr << std::unitbuf;
-
+  int port = 6379;
+  for (int i = 1; i < argc; i++) {
+    if (argv[i] == "--port" && i + 1 < argc) {
+      port = atoi(argv[i+1]);
+    }
+  }
   try {
     asio::io_context io_context;
-    RedisServer server(io_context, 6379);
+    RedisServer server(io_context, port);
     io_context.run();
   } catch( std::exception& e ) {
     std::cerr << "Exception: " << e.what() << std::endl;
