@@ -49,6 +49,12 @@ public:
       queued_commands_.pop();
     }
   }
+  void end_transaction() {
+    in_transaction_ = false;
+    while (!queued_commands_.empty()) {
+      queued_commands_.pop();
+    }
+  }
   void queue_command(const std::vector<std::string>& command) {
     if (in_transaction_) {
       queued_commands_.emplace(command);
@@ -869,6 +875,7 @@ private:
           std::string cmd_response = execute_single_command(command.parts);
           responses.push_back(cmd_response);
         }
+        transaction_state_->end_transaction();
         response = RespParser::format_transaction_response(responses);
       }
     } else if (transaction_state_->is_in_transaction()) {
