@@ -11,6 +11,7 @@
 #include <unordered_set>
 #include <optional>
 #include <map>
+#include <queue>
 #include <asio.hpp>
 
 using asio::ip::tcp;
@@ -26,6 +27,33 @@ struct StreamEntry {
   std::map<std::string, std::string> field;
   StreamEntry(const std::string& entry_id, const std::map<std::string, std::string>& entry_field)
     : id(entry_id), field(entry_field) {}
+};
+
+struct QueuedCommand {
+  std::vector<std::string> parts;
+  QueuedCommand(const std::vector<std::string>& cmd_parts)
+    :parts(cmd_parts) {};
+};
+
+class TransactionState {
+private:
+  bool in_transaction_;
+  std::queue<QueuedCommand> queued_commands_;
+public:
+  TransactionState()
+    :in_transaction_(false) {};
+  bool is_in_transaction() const { return in_transaction_; }
+  void start_transaction() {
+    in_transaction_ = true;
+    while (!queued_commands_.empty()) {
+      queued_commands_.pop();
+    }
+  }
+  void queue_command(const std::vector<std::string>& command) {
+    if (in_transaction_) {
+      queued_commands_.emplace(command);
+    }
+  }
 };
 
 class RedisStream {
@@ -677,6 +705,7 @@ private:
   std::shared_ptr<RedisStore> store_;
   std::shared_ptr<BlockingOperationManager> blocking_manager_;
   std::unordered_set<std::shared_ptr<BlockingOperation>> my_blocking_ops_;
+  std::shared_ptr<TransactionState> transaction_state_;
 public:
   RedisConnection(tcp::socket socket, 
                   std::shared_ptr<RedisStore> store,
@@ -684,7 +713,8 @@ public:
     :socket_(std::move(socket)),
     read_buffer_(1024),
     store_(store),
-    blocking_manager_(blocking_manager) {
+    blocking_manager_(blocking_manager),
+    transaction_state_(std::make_shared<TransactionState>()) {
       std::cout << "Client connected\n";
   }
   ~RedisConnection() {
@@ -805,9 +835,75 @@ private:
   }
   void do_process_command(const std::string& command) {
     auto command_parts = RespParser::parse(command);
-    if (command_parts.empty())  {
+    if (command_parts.empty()) {
       return;
     }
+    std::string response;
+    std::string cmd = to_upper(command_parts[0]);
+    if (cmd == "MULTI") {
+      if (transaction_state_->is_in_transaction()) {
+        response = RespParser::format_simple_error_response("MULTI calls can not be nested");
+      } else {
+        transaction_state_->start_transaction();
+        response = RespParser::format_simple_response("OK");
+      }
+    } else if (transaction_state_->is_in_transaction()) {
+      if (cmd == "BLPOP" || cmd == "XREAD") {
+        response = RespParser::format_simple_error_response("Command not allowd in transaction");
+      } else {
+        transaction_state_->queue_command(command_parts);
+        response = RespParser::format_simple_response("QUEUED");
+      }
+    } else if (cmd == "BLPOP" && command_parts.size() >= 3) {
+      double d_timeout_milliseconds = std::stod(command_parts.back()) * 1000;
+      int i_timeout = static_cast<int>(d_timeout_milliseconds);
+      std::vector<std::string> keys(command_parts.begin()+1, command_parts.end()-1);
+      auto blpop_op = std::make_shared<BlpopOperation>(shared_from_this(), keys, i_timeout);
+      if (!blpop_op->try_execute()) {
+        add_blocking_operation(blpop_op);
+        blocking_manager_->add_blocking_operation(blpop_op);
+      }
+      return;
+    } else if (cmd == "XREAD" && command_parts.size() >= 4) {
+      std::vector<std::pair<std::string, std::string>> stream_ids;
+      std::size_t entries_size;
+      int millisecond_timeout = -1;
+      auto it = command_parts.begin() + 1;
+      if ( to_upper(*it) == "BLOCK" ) { 
+        it += 1;
+        millisecond_timeout = std::stoi(*it);
+        it += 1;
+      }
+      if ( to_upper(*it) == "STREAMS" ) { it += 1; }
+
+      entries_size = (command_parts.end() - it) / 2;
+      auto entries_end = it + entries_size;
+      for (it = it; it < entries_end; it++) {
+        stream_ids.push_back({*it, *(it+entries_size)});
+      }
+      // handle block
+      if (millisecond_timeout >= 0) {
+        auto xread_op = std::make_shared<XreadOperation>(shared_from_this(), stream_ids, millisecond_timeout);
+        if (!xread_op->try_execute()) {
+          add_blocking_operation(xread_op);
+          blocking_manager_->add_blocking_operation(xread_op);
+        }
+        return;
+      }
+      // normal
+      auto result = store_->try_xread(stream_ids);
+      if (result.has_value()) {
+        response = RespParser::format_xread_response(result.value());
+      } else {
+        // I'm not sure is it correct
+        response = RespParser::format_null_bulk_response();
+      }
+    } else {
+      response = execute_single_command(command_parts);
+    }
+    do_write(response);
+  }
+  std::string execute_single_command(std::vector<std::string> command_parts) {
     std::string cmd = command_parts[0];
     std::transform(cmd.begin(), cmd.end(), cmd.begin(), ::toupper);
     std::string response;
@@ -871,16 +967,6 @@ private:
           response = RespParser::format_null_bulk_response();
         }
       }
-    } else if (cmd == "BLPOP" && command_parts.size() >= 3) {
-      double d_timeout_milliseconds = std::stod(command_parts.back()) * 1000;
-      int i_timeout = static_cast<int>(d_timeout_milliseconds);
-      std::vector<std::string> keys(command_parts.begin()+1, command_parts.end()-1);
-      auto blpop_op = std::make_shared<BlpopOperation>(shared_from_this(), keys, i_timeout);
-      if (!blpop_op->try_execute()) {
-        add_blocking_operation(blpop_op);
-        blocking_manager_->add_blocking_operation(blpop_op);
-      }
-      return;
     } else if (cmd == "TYPE" && command_parts.size() >= 2) {
       RedisStore::DataType type = store_->get_type(command_parts[1]);
       std::string type_str;
@@ -914,42 +1000,8 @@ private:
     } else if (cmd == "XRANGE" && command_parts.size() >= 4) {
       std::vector<StreamEntry> result = store_->xrange(command_parts[1], command_parts[2], command_parts[3]);
       response = RespParser::format_array_response(result);
-    } else if (cmd == "XREAD" && command_parts.size() >= 4) {
-      std::vector<std::pair<std::string, std::string>> stream_ids;
-      std::size_t entries_size;
-      int millisecond_timeout = -1;
-      auto it = command_parts.begin() + 1;
-      if ( to_upper(*it) == "BLOCK" ) { 
-        it += 1;
-        millisecond_timeout = std::stoi(*it);
-        it += 1;
-      }
-      if ( to_upper(*it) == "STREAMS" ) { it += 1; }
-
-      entries_size = (command_parts.end() - it) / 2;
-      auto entries_end = it + entries_size;
-      for (it = it; it < entries_end; it++) {
-        stream_ids.push_back({*it, *(it+entries_size)});
-      }
-      // handle block
-      if (millisecond_timeout >= 0) {
-        auto xread_op = std::make_shared<XreadOperation>(shared_from_this(), stream_ids, millisecond_timeout);
-        if (!xread_op->try_execute()) {
-          add_blocking_operation(xread_op);
-          blocking_manager_->add_blocking_operation(xread_op);
-        }
-        return;
-      }
-      // normal
-      auto result = store_->try_xread(stream_ids);
-      if (result.has_value()) {
-        response = RespParser::format_xread_response(result.value());
-      } else {
-        // I'm not sure is it correct
-        response = RespParser::format_null_bulk_response();
-      }
-    }
-    do_write(response);
+    } 
+    return response;
   }
 };
 
