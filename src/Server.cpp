@@ -1128,7 +1128,7 @@ int main(int argc, char **argv) {
   std::cerr << std::unitbuf;
   int port = 6379;
   for (int i = 1; i < argc; i++) {
-    if (argv[i] == "--port" && i + 1 < argc) {
+    if (std::string(argv[i]) == "--port" && i + 1 < argc) {
       port = atoi(argv[i+1]);
     }
   }
