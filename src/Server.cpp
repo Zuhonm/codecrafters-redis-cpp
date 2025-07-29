@@ -54,6 +54,9 @@ public:
       queued_commands_.emplace(command);
     }
   }
+  std::queue<QueuedCommand> get_queued_commands() {
+    return queued_commands_;
+  }
 };
 
 class RedisStream {
@@ -695,6 +698,13 @@ public:
     }
     return response;
   }
+  static std::string format_transaction_response(const std::vector<std::string>& responses) {
+    std::string response = "*" + std::to_string(responses.size()) + "\r\n";
+    for (auto& r : responses) {
+      response += r;
+    }
+    return response;
+  }
 };
 
 class RedisConnection : public std::enable_shared_from_this<RedisConnection> {
@@ -846,6 +856,20 @@ private:
       } else {
         transaction_state_->start_transaction();
         response = RespParser::format_simple_response("OK");
+      }
+    } else if (cmd == "EXEC") {
+      if (!transaction_state_->is_in_transaction()) {
+        response = RespParser::format_simple_error_response("EXEC without MULTI");
+      } else {
+        std::vector<std::string> responses;
+        auto queued_commands = transaction_state_->get_queued_commands();
+        while(!queued_commands.empty()) {
+          auto command = queued_commands.front();
+          queued_commands.pop();
+          std::string cmd_response = execute_single_command(command.parts);
+          responses.push_back(cmd_response);
+        }
+        response = RespParser::format_transaction_response(responses);
       }
     } else if (transaction_state_->is_in_transaction()) {
       if (cmd == "BLPOP" || cmd == "XREAD") {
